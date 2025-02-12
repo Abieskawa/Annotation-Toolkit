@@ -137,7 +137,7 @@ def run_gff(args):
     # Identify gene/pseudogene features
     genes_df     = df[df['type'] == "gene"].copy()
     pseudos_df   = df[df['type'] == "pseudogene"].copy()
-    n_genes      = genes_df.shape[0] + pseudos_df.shape[0]
+    n_genes      = genes_df.shape[0]
     n_pseudos    = pseudos_df.shape[0]
 
     # Possibly parse gene_biotype if present
@@ -150,11 +150,9 @@ def run_gff(args):
         if unique_biotypes != {"NA"}:
             gene_biotype_available = True
 
-    # -----------------------
     # Skip codon checks if:
     #  1) gene_biotype info is available, OR
     #  2) 'Gnomon' found in the source column
-    # -----------------------
     skip_codon_check = False
     if gene_biotype_available or ("Gnomon" in df["source"].unique()):
         skip_codon_check = True
@@ -166,13 +164,11 @@ def run_gff(args):
     mRNA_df = df[df['type'] == 'mRNA'].copy()
     if not skip_codon_check:
         if gene_biotype_available:
-            # If gene_biotype is present, merge to see which mRNAs are from protein-coding genes
+            # Merge gene info to see which mRNAs are from protein-coding genes
             gene_info = genes_df[['ID', 'gene_biotype']].rename(columns={'ID': 'gene'})
             mRNA_df = mRNA_df.merge(gene_info, left_on='Parent', right_on='gene', how='left')
-
         start_codons = df[df['type'] == 'start_codon']
         stop_codons  = df[df['type'] == 'stop_codon']
-
         start_grp = start_codons.groupby("Parent") if not start_codons.empty else None
         stop_grp  = stop_codons.groupby("Parent")  if not stop_codons.empty  else None
 
@@ -180,52 +176,43 @@ def run_gff(args):
             # Filter to only protein_coding mRNAs
             pc_mrnas = mRNA_df[mRNA_df["gene_biotype"] == "protein_coding"]
             for _, r in pc_mrnas.iterrows():
-                err =              codon(r, start_grp, "start")
-                if err: start_errs.append(err)
+                err = check_codon(r, start_grp, "start")
+                if err:
+                    start_errs.append(err)
                 err = check_codon(r, stop_grp, "stop")
-                if err: stop_errs.append(err)
+                if err:
+                    stop_errs.append(err)
         else:
             # Check for all mRNAs
             for _, r in mRNA_df.iterrows():
                 err = check_codon(r, start_grp, "start")
-                if err: start_errs.append(err)
+                if err:
+                    start_errs.append(err)
                 err = check_codon(r, stop_grp, "stop")
-                if err: stop_errs.append(err)
+                if err:
+                    stop_errs.append(err)
 
-    # --------------------------------------------------------------------
-    # When calculating the total exon number and single-exon genes,
-    # only refer to protein-coding genes if gene_biotype is available.
-    # Otherwise, do the original method on all genes.
-    # --------------------------------------------------------------------
+    # When calculating total exon number and single-exon genes,
+    # refer to protein-coding genes if gene_biotype is available.
     exon_df = df[df['type'] == "exon"].copy()
-
     if gene_biotype_available:
         # 1) Identify protein-coding mRNAs
         gene_info = genes_df[['ID', 'gene_biotype']].rename(columns={'ID': 'gene'})
         mRNA_biotype = df[df['type'] == 'mRNA'].merge(gene_info, left_on='Parent', right_on='gene', how='left')
         pc_mRNAs = mRNA_biotype[mRNA_biotype['gene_biotype'] == 'protein_coding'].copy()
-
         # 2) Filter exons to only those belonging to protein-coding mRNAs
-        #    (exon Parent => mRNA ID, must appear in pc_mRNAs)
         pc_exons = exon_df.merge(pc_mRNAs[['ID']], left_on='Parent', right_on='ID', how='inner')
-
-        # Count total exons for protein-coding only
+        # Count total exons (protein-coding only)
         n_exon = pc_exons.shape[0]
-
-        # 3) Single-exon gene counting for protein-coding only
-        #    Map these pc_mRNAs back to their genes
+        # 3) Count single-exon genes (protein-coding only)
         pc_mRNAs_map = pc_mRNAs[['ID', 'Parent']].rename(columns={'Parent': 'Gene_ID'})
         pc_exons_merged = pc_exons.merge(pc_mRNAs_map, left_on='Parent', right_on='ID', how='left', suffixes=('_exon','_mRNA'))
-
         pc_exon_counts = pc_exons_merged.groupby('Gene_ID').size()
-
         single_exon_genes = 0
-        # Which genes are protein-coding?
         pc_genes = genes_df[genes_df["gene_biotype"] == "protein_coding"]
         for gid in pc_genes['ID']:
             if pc_exon_counts.get(gid, 0) == 1:
                 single_exon_genes += 1
-
     else:
         # Old method if gene_biotype not available
         n_exon = exon_df.shape[0]
@@ -233,19 +220,18 @@ def run_gff(args):
         exons_merged = exon_df.merge(mRNA_gene_map, left_on='Parent', right_on='ID', how='left', suffixes=('_exon','_mRNA'))
         exon_counts = exons_merged.groupby('Gene_ID').size()
 
-        # Consider all genes (including pseudogenes) for single-exon
-        all_genes = pd.concat([genes_df, pseudos_df], ignore_index=True)
+        # Consider only genes (excluding pseudogenes) for single-exon gene calculation
+        all_genes = genes_df.copy()
         single_exon_genes = 0
         for gid in all_genes['ID']:
             if exon_counts.get(gid, 0) == 1:
                 single_exon_genes += 1
 
-    # Also count how many mRNAs are in the final mRNA_df 
-    # (though if skipping codon check, we didn't filter it, so it's all mRNAs)
+    # Count mRNAs in the final mRNA_df (may be filtered if codon checks were applied)
     n_mrna = mRNA_df.shape[0]
 
-    # Compute gene lengths & median (including pseudogenes)
-    all_genes = pd.concat([genes_df, pseudos_df], ignore_index=True)
+    # Compute gene lengths and median
+    all_genes = genes_df.copy()
     if not all_genes.empty:
         all_genes["gene_length"] = (all_genes["end"] - all_genes["start"]).abs()
         gene_lengths = all_genes["gene_length"].tolist()
@@ -260,25 +246,23 @@ def run_gff(args):
             median_len = 0
     else:
         gene_lengths = []
-        median_len   = 0
+        median_len = 0
 
-    # If gene_biotype is available, do additional stats
+    # Additional stats if gene_biotype is available
     biotype_counts = None
     if gene_biotype_available:
         biotype_counts = genes_df["gene_biotype"].value_counts()
-        pc_genes   = genes_df[genes_df["gene_biotype"] == "protein_coding"]
-        npc_genes  = genes_df[genes_df["gene_biotype"] != "protein_coding"]
-
+        pc_genes = genes_df[genes_df["gene_biotype"] == "protein_coding"]
+        npc_genes = genes_df[genes_df["gene_biotype"] != "protein_coding"]
         lengths_pc = (pc_genes["end"] - pc_genes["start"]).abs().tolist() if not pc_genes.empty else []
         med_len_pc = int(statistics.median(lengths_pc)) if lengths_pc else 0
-
         lengths_npc = (npc_genes["end"] - npc_genes["start"]).abs().tolist() if not npc_genes.empty else []
         med_len_npc = int(statistics.median(lengths_npc)) if lengths_npc else 0
     else:
-        med_len_pc  = 0
+        med_len_pc = 0
         med_len_npc = 0
 
-    # Run gff3_QC
+    # Run external gff3_QC command
     base = args.basename
     qc_output_file = f"{base}_qc.txt"
     qc_stat_file   = f"{base}_statistic.txt"
@@ -293,50 +277,36 @@ def run_gff(args):
         "--statistic", qc_stat_file
     ], check=True)
 
-    # Plot histogram if we have any gene lengths.
-    # (For this gff case, you can now choose to call plot_hist with the new parameters.
-    # For example, to plot gene lengths in sections of 2000 bp with a last bin labeled ">30000",
-    # you would call:)
-    #
-    #   plot_hist(gene_lengths, median_len, qc_plot_file, bin_size=2000, thresh=30000, xlabel="Gene Length (bp)")
-    #
-    # If you prefer the other configuration (e.g. for protein data), call with:
-    #
-    #   plot_hist(lengths, median, output_file, bin_size=100, thresh=2000, xlabel="Protein Length (aa)")
-    #
-    # Here we leave the call as is (or change it per your needs).
+    # Plot histogram if gene lengths exist (using 2000-bp bins with a final bin labeled ">30000")
     if gene_lengths:
-        # Example: for DNA gene lengths from GFF, using 2000 bp bins and a final bin for >30000 bp.
-        plot_hist(gene_lengths, median_len, qc_plot_file, bin_size=2000, thresh=30000, xlabel="Gene Length (bp)")
+        plot_bar(gene_lengths, median_len, qc_plot_file, bin_size=2000, thresh=30000, xlabel="Gene Length (bp)")
 
-    # Write Additional QC Info
+    # Write additional QC info to file
     with open(qc_extra_file, 'w') as f:
         f.write("=== Additional Validation Checks ===\n\n")
         if not skip_codon_check:
             f.write(f"Stop codon issues: {len(stop_errs)}\n")
             for err in stop_errs:
                 f.write(err + "\n")
-
             f.write(f"\nStart codon issues: {len(start_errs)}\n")
             for err in start_errs:
                 f.write(err + "\n")
         else:
             f.write("Skipping codon checks (gene_biotype present or source is 'Gnomon').\n")
-
         f.write("\n=== Summary Stats ===\n")
-        f.write(f"Genes (incl. pseudogenes): {n_genes} (pseudogenes: {n_pseudos})\n")
-        f.write(f"Single-exon genes (PC if available): {single_exon_genes}\n")
+        f.write(f"Genes: {n_genes}")
+        f.write(f"Pseudogenes: {n_pseudos})\n")
+        f.write(f"Single-exon genes (Protein-coding if available): {single_exon_genes}\n")
         f.write(f"mRNAs: {n_mrna}\n")
-        f.write(f"Exons (PC if available): {n_exon}\n")
+        f.write(f"Exons (Protein-coding if available): {n_exon}\n")
         f.write(f"Median gene length (all genes): {median_len}\n")
-
         if gene_biotype_available and biotype_counts is not None:
-            f.write("\nGene biotype counts:\n")
-            for bt, count in biotype_counts.items():
-                f.write(f"  {bt}: {count}\n")
             f.write("\nSeparate median lengths:\n")
             f.write(f"  Protein-coding:     {med_len_pc}\n")
             f.write(f"  Non-protein-coding: {med_len_npc}\n")
+            f.write("\nGene biotype counts:\n")
+            for bt, count in biotype_counts.items():
+                f.write(f"  {bt}: {count}\n")
 
     print(f"Done. Additional checks in '{qc_extra_file}', histogram in '{qc_plot_file}'.")
 
@@ -345,9 +315,8 @@ def run_gff(args):
 # -----------------------------------------------------------------------
 def run_interpro(args):
     """
-    Based on your InterProScan TSV (molas) file processor.
-    Summarizes coverage for IPR and GO annotation, writes out
-    annotated protein/gene lists.
+    Processes an InterProScan TSV file to summarize IPR and GO annotations,
+    and writes out annotated protein and gene lists.
     """
     import re
 
@@ -357,9 +326,8 @@ def run_interpro(args):
     with open(args.fasta, "r") as f:
         for line in f:
             if line.startswith(">"):
-                protein_id = line.strip().split()[0][1:]  # Remove '>'
+                protein_id = line.strip().split()[0][1:]
                 proteins.add(protein_id)
-                # e.g. T_jap_g4.p1 -> T_jap_g4
                 gene_id = re.sub(r"\.p\d+$", "", protein_id)
                 genes.add(gene_id)
 
@@ -372,21 +340,18 @@ def run_interpro(args):
     with open(args.interpro_tsv, "r") as f:
         for line in f:
             line = line.strip()
-            if not line:  # skip empty lines
+            if not line:
                 continue
             cols = line.split("\t")
             if len(cols) < 5:
                 continue
-            protein_name = cols[0].strip()   # e.g. T_jap_g4.p1
-            ipr_id       = cols[1].strip()   # e.g. IPR009262
-            go_col       = cols[4].strip()   # e.g. GO:0016020,... or "No GO terms"
-
+            protein_name = cols[0].strip()
+            ipr_id       = cols[1].strip()
+            go_col       = cols[4].strip()
             gene_name    = re.sub(r"\.p\d+$", "", protein_name)
-
             if ipr_id.startswith("IPR"):
                 annotated_proteins_ipr.add(protein_name)
                 annotated_genes_ipr.add(gene_name)
-
             if go_col != "No GO terms":
                 annotated_proteins_go.add(protein_name)
                 annotated_genes_go.add(gene_name)
@@ -398,7 +363,6 @@ def run_interpro(args):
     num_ipr_gene = len(annotated_genes_ipr)
     num_go_prot  = len(annotated_proteins_go)
     num_go_gene  = len(annotated_genes_go)
-
     ipr_prot_percent = (num_ipr_prot / num_proteins * 100) if num_proteins else 0
     ipr_gene_percent = (num_ipr_gene / num_genes * 100) if num_genes else 0
     go_prot_percent  = (num_go_prot  / num_proteins * 100) if num_proteins else 0
@@ -445,33 +409,28 @@ def run_interpro(args):
 # -----------------------------------------------------------------------
 def run_kaas(args):
     """
-    Based on your KAAS script: calculates line-level annotation stats,
-    gene-level annotation stats, and outputs a list of annotated genes.
+    Processes a KAAS result file to calculate annotation stats
+    and outputs a list of annotated genes.
     """
-    file_path  = args.file
-    out_dir    = args.outdir
-
+    file_path = args.file
+    out_dir = args.outdir
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    f1_count = 0  # Lines with a non-empty first field
-    f2_count = 0  # Lines with a non-empty second field
-
-    all_genes       = set()
-    genes_with_f2   = set()
+    f1_count = 0  # Lines with non-empty first field
+    f2_count = 0  # Lines with non-empty second field
+    all_genes = set()
+    genes_with_f2 = set()
 
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.rstrip("\n")
             fields = line.split("\t")
-
             if len(fields) >= 1 and fields[0].strip():
                 f1_count += 1
                 protein_name = fields[0].strip()
-                # e.g. "T_jap_g7.t2" -> "T_jap_g7"
                 gene_name = protein_name.split(".", 1)[0]
                 all_genes.add(gene_name)
-
                 if len(fields) >= 2 and fields[1].strip():
                     f2_count += 1
                     genes_with_f2.add(gene_name)
@@ -515,7 +474,6 @@ def run_hist(args):
                 seq = ""
             else:
                 seq += line
-    # Add the last sequence length
     if header is not None:
         lengths.append(len(seq))
 
@@ -524,8 +482,6 @@ def run_hist(args):
         return
 
     median_len = statistics.median(lengths)
-
-    # Determine default bins, thresholds, etc.
     ext = os.path.splitext(args.fasta)[1].lower()
     if ext == ".aa":
         default_bin, default_thresh, default_xlabel = (100, 2000, "Protein Length (aa)")
@@ -533,18 +489,18 @@ def run_hist(args):
         default_bin, default_thresh, default_xlabel = (1000, 20000, "Sequence Length (bp)")
 
     bin_size = args.bin_size if args.bin_size is not None else default_bin
-    thresh   = args.threshold if args.threshold is not None else default_thresh
-    xlabel   = args.xlabel if args.xlabel is not None else default_xlabel
+    thresh = args.threshold if args.threshold is not None else default_thresh
+    xlabel = args.xlabel if args.xlabel is not None else default_xlabel
 
-    # Call plot_hist with the chosen parameters.
-    plot_hist(lengths, median_len, args.output, bin_size, thresh, xlabel)
+    # Plot the bar chart using the plot_bar function.
+    plot_bar(lengths, median_len, args.output, bin_size, thresh, xlabel)
     print(f"Histogram saved to {args.output}")
 
 # -----------------------------------------------------------------------
 # Main Parser
 # -----------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Combined script for GFF QC, InterPro, KAAS, and hist plotting.")
+    parser = argparse.ArgumentParser(description="Combined script for GFF QC, InterPro, KAAS, and histogram plotting.")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 
     # 1. GFF sub-command
@@ -571,7 +527,7 @@ def main():
     ph = subparsers.add_parser("hist", help="Plot a length histogram from a FASTA file.")
     ph.add_argument("-f", "--fasta", required=True, help="Input FASTA file (.fa, .fasta, or .aa)")
     ph.add_argument("-o", "--output", required=True, help="Output image file (PNG, etc.)")
-    ph.add_argument("--bin_size", type=int, default=None, help="Bin size (default depends on .aa or DNA).")
+    ph.add_argument("--bin_size", type=int, default=None, help="Bin size (default depends on file extension).")
     ph.add_argument("--threshold", type=int, default=None, help="Upper threshold for histogram.")
     ph.add_argument("--xlabel", type=str, default=None, help="Label for x-axis.")
     ph.set_defaults(func=run_hist)
