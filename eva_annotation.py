@@ -343,19 +343,26 @@ def run_interpro(args):
             if not line:
                 continue
             cols = line.split("\t")
-            if len(cols) < 5:
+            # Skip lines that don't have any columns beyond the protein name.
+            if len(cols) < 2:
                 continue
+
+            # The first column is the protein name.
             protein_name = cols[0].strip()
-            ipr_id       = cols[1].strip()
-            go_col       = cols[4].strip()
-            gene_name    = re.sub(r"\.p\d+$", "", protein_name)
-            if ipr_id.startswith("IPR"):
+            gene_name = re.sub(r"\.p\d+$", "", protein_name)
+
+            # Look for an IPR field in the remaining columns.
+            found_ipr = any(col.strip().startswith("IPR") for col in cols[1:] if col.strip())
+            # Look for any GO term in any column (if the field contains "GO:")
+            found_go = any("GO:" in col for col in cols[1:] if col.strip())
+
+            if found_ipr:
                 annotated_proteins_ipr.add(protein_name)
                 annotated_genes_ipr.add(gene_name)
-            if go_col != "No GO terms":
+            if found_go:
                 annotated_proteins_go.add(protein_name)
                 annotated_genes_go.add(gene_name)
-
+    
     # 3. Summary stats
     num_proteins = len(proteins)
     num_genes    = len(genes)
