@@ -28,14 +28,14 @@
 #     AAAAAAAAAAAA
 #     GGGGGGGGGGGG
 #
-# The option --detect_adapter_for_pe is parsed (and logged) but not used by cutadapt.
+# Supported file extensions for paired‐end inputs are: .fastq, .fq, .fastq.gz, and .fq.gz
 #
 # Example (global front trimming):
-#   nohup bash run_cutadapt.sh -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA \\
+#   nohup bash run_cutadapt.sh -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA \
 #         -t 128 -l 5 -q 20 -Q 20 -f 10 -a1 YOUR_ADAPTER1 -a2 YOUR_ADAPTER2 > run_cutadapt.log 2>&1 &
 #
 # Example (per-sample trimming using a trim file):
-#   nohup bash run_cutadapt.sh -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA \\
+#   nohup bash run_cutadapt.sh -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA \
 #         -t 128 -l 5 -q 20 -Q 20 -f sample_trim.txt > run_cutadapt.log 2>&1 &
 
 ############################################
@@ -51,9 +51,6 @@ trim_front=""        # Either a single number (global) or a filename with per-sa
 adapter1=""
 adapter2=""
 
-# (Note: --detect_adapter_for_pe is parsed but not used by cutadapt.)
-detect_adapter_for_pe=0
-
 # Required parameters
 wd=""
 output_dir=""
@@ -65,7 +62,10 @@ usage() {
   cat <<EOF
 Usage: $0 -d <working_directory> -o <output_directory> -t <threads> -l <min_length> \\
           -q <quality_R1> -Q <quality_R2> [-f <trim_front_value_or_file>] \\
-          [-a1 <adapter_read1>] [-a2 <adapter_read2>] [--detect_adapter_for_pe]
+          [-a1 <adapter_read1>] [-a2 <adapter_read2>]
+
+This script expects paired‐end files named as: <basename>_1.<ext> and <basename>_2.<ext>,
+where <ext> can be one of: fastq, fq, fastq.gz, or fq.gz.
 
 Example (global front trimming):
   $0 -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA -t 16 -l 5 -q 20 -Q 20 -f 10 -a1 YOUR_ADAPTER1 -a2 YOUR_ADAPTER2
@@ -90,7 +90,6 @@ Options:
   -f      (Optional) Either a single number or a filename with sample-specific trimming values
   -a1     (Optional) Adapter sequence for read1
   -a2     (Optional) Adapter sequence for read2
-  --detect_adapter_for_pe  (Parsed but not used)
   -? or --help   Display this help message
 EOF
   exit 1
@@ -149,10 +148,6 @@ while [ $# -gt 0 ]; do
     -a2)
       adapter2="$2"
       shift 2
-      ;;
-    --detect_adapter_for_pe)
-      detect_adapter_for_pe=1
-      shift
       ;;
     -\? | --help)
       usage
@@ -231,22 +226,27 @@ fi
 ############################################
 cd "$wd" || { echo "Error: Failed to change directory to '$wd'"; exit 1; }
 
-############################################
-# Find unique sample basenames from FASTQ files
-############################################
-# This script expects paired-end files named as: <basename>_1.fastq and <basename>_2.fastq.
-# We extract the basename as the part before the first underscore.
-uniq_basenames=$(find . -maxdepth 1 -type f -name "*.fastq" \
-  | sed 's|^\./||' \
-  | cut -d '_' -f1 \
-  | sort | uniq)
+# Enable nullglob so that unmatched globs expand to null
+shopt -s nullglob
 
 ############################################
 # Process each sample
 ############################################
-for basename in $uniq_basenames; do
-  read1="${basename}_1.fastq"
-  read2="${basename}_2.fastq"
+# This script expects paired‐end files named as: <basename>_1.<ext> and <basename>_2.<ext>,
+# where <ext> can be fastq, fq, fastq.gz, or fq.gz.
+found_samples=0
+for file in *_[1].fastq *_[1].fq *_[1].fastq.gz *_[1].fq.gz; do
+  if [ ! -f "$file" ]; then
+    continue
+  fi
+  found_samples=1
+  
+  # Extract basename by removing the trailing _1 and extension.
+  basename="${file%_1.*}"
+  ext="${file##*_1.}"
+  
+  read1="${basename}_1.${ext}"
+  read2="${basename}_2.${ext}"
   
   if [[ ! -f "$read1" || ! -f "$read2" ]]; then
     echo "Skipping sample '$basename': one or both paired-end files are missing."
@@ -315,13 +315,17 @@ for basename in $uniq_basenames; do
   fi
   
   # Define output filenames (placed in the output directory)
-  out1="${output_dir}/${basename}_1.cleaned.fastq"
-  out2="${output_dir}/${basename}_2.cleaned.fastq"
+  out1="${output_dir}/${basename}_1.cleaned.${ext}"
+  out2="${output_dir}/${basename}_2.cleaned.${ext}"
   
   cmd+=( -o "$out1" -p "$out2" "$read1" "$read2" )
   
   echo "Running command: ${cmd[*]}"
   "${cmd[@]}"
 done
+
+if [ $found_samples -eq 0 ]; then
+  echo "No input files matching supported extensions were found in $(pwd)"
+fi
 
 echo "All samples processed at $(date)"
