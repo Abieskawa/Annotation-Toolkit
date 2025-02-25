@@ -1,36 +1,51 @@
 # Annotation-Toolkit
-This repository is the home place for any tool I used to annotated the genome, including the command line, evaluation and download tool
+This repository is the home place for any tool I used to annotated the genome, including the command line, evaluation and download tool.
 
 ## Check the received genome quality
+Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
 ### Check basics number of genome assembly
+    ```
+    python assembly_quality_check_v5.py {fasta file} 
+    ```
 ### Check with BUSCO genome mode
-The miniprot and metaeuk mode are both recommended to apply.
-```
-nohup busco -i MTW_genome.fasta -m genome -l mollusca_odb10 -c 128 -o asian_hard_clam_clean_genome_miniprot --miniprot --out_path BUSCO/ > run_busco_genome_miniprot.log 2>&1 &
-```
+The miniprot and metaeuk mode are both recommended to apply. Please start a docker of BUSCO first and run the command below. It takes less an hour.
+    ```
+    nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o asian_hard_clam_clean_genome_miniprot --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
+    ```
 ### Check with FCS adapter/gx
+It requires some efforts to configure, users can follow the instruction recorded in the link.  
 gx manual and example: https://github.com/ncbi/fcs/wiki/FCS-GX-quickstart
 gx report info: https://github.com/ncbi/fcs/wiki/FCS-GX-output
-```
-python3 ../Annotation-Toolkit/fcs.py screen genome --fasta MTW_genome.fasta --out-dir 00_fcs_gx_report/ --gx-db "$GXDB_LOC/gxdb" --tax-id 311198
-#replace all in fifth column to EXCLUDE. 
-awk -F'\t' -v OFS='\t' '{ $5 = "EXCLUDE"; print }' 00_fcs_gx_report/MTW_genome.311198.fcs_gx_report.txt > 00_fcs_gx_report/MTW_genome.311198.fcs_gx_report_modified.txt
+    ```
+    python3 {the path of this directory}/fcs.py screen genome --fasta {genome fasta} --out-dir {output directory} --gx-db "$GXDB_LOC/gxdb" --tax-id {tax id}
+
+#replace all in fifth column to EXCLUDE.
+#genome fasta basename, ex. MTW_genome.fa -> MTW_genome
+#tax id: hypothesized species or the related one
+    awk -F'\t' -v OFS='\t' '{ $5 = "EXCLUDE"; print }' {output directory}/{genome fasta basename}.{tax id}.fcs_gx_report.txt > {output directory}/{genome fasta basename}.{tax id}.fcs_gx_report_modified.txt
 
 #Clean genome
-cat MTW_genome.fasta | python3 ../Annotation-Toolkit/fcs.py clean genome --action-report ./00_fcs_gx_report/MTW_genome.311198.fcs_gx_report_modified.txt --output 00_clean_genome/MTW_genome_clean.fasta --contam-fasta-out 00_clean_genome/contam.fasta
+    cat MTW_genome.fasta | python3 {the path of this directory}/fcs.py clean genome --action-report ./{output directory}/{genome fasta basename}.{tax id}.fcs_gx_report_modified.txt --output {output clean directory}/{genome fasta basename}_clean.fasta --contam-fasta-out {output clean directory}/contam.fasta
+    ```
+
+## (Optional) Check which scaffold is mitochondria genome
 ```
+
+```
+
 ## (Optional) If one wants to extract mitochondria and nucleus chromosomes (Longest)
 ```
 
 ``` 
-## Run repeat soft masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
-```
-#Repeat masking with RepeatMasker and RepeatModeler
-nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta -o /output/asian_hard_clam -t 128 -l /output/Lib_fish/famdb -s 'Bivalvia' -f 'asian_hard_clam' --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
 
-#Run epeat masking again with TRF
-nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome_keep_nuclear_mito.fasta.masked -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
-```
+## Run repeat soft masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
+    ```
+#Repeat masking with RepeatMasker and RepeatModeler
+    nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta -o /output/asian_hard_clam -t 128 -l /output/Lib_fish/famdb -s 'Bivalvia' -f 'asian_hard_clam' --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
+
+#Run repeat masking again with TRF
+    nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome_keep_nuclear_mito.fasta.masked -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
+    ```
 
 ## Run fasta simplification
 Without this steps, Braker3 script is still executable, but it will complain annoying messages. 
@@ -39,21 +54,20 @@ perl ../Annotation-Toolkit/simplifyFastaHeaders.pl braker_odbv12v0_Metazoa_UniPr
 ``` 
 
 ## Prepare protein evidence:
-https://github.com/gatech-genemark/ProtHint/issues/39
-odb12v0_level2species.tab.gz, odb12v0_levels.tab.gz, odb12v0_aa_fasta.gz, odb12v0_species.tab.gz can be downloaded from OrthoDB v12 website 
-```
-nohup python ../Annotation-Toolkit/extract_clade_proteins.py --clade Mollusca --levels odb12v0_levels.tab.gz --level2species odb12v0_level2species.tab.gz --fasta odb12v0_aa_fasta.gz --output Mollusca.fa --report-species --report-species --speciesmap odb12v0_species.tab.gz > extract_mollusca.log 2>&1 &
-```
+The script was modified with some informatiuon provided in https://github.com/gatech-genemark/ProtHint/issues/39
+Users should download odb12v0_level2species.tab.gz, odb12v0_levels.tab.gz, odb12v0_aa_fasta.gz, odb12v0_species.tab.gz can be downloaded from OrthoDB v12 website first.
+    ```
+    nohup python ../Annotation-Toolkit/extract_clade_proteins.py --clade Mollusca --levels odb12v0_levels.tab.gz --level2species odb12v0_level2species.tab.gz --fasta odb12v0_aa_fasta.gz --output Mollusca.fa --report-species --report-species --speciesmap odb12v0_species.tab.gz > extract_mollusca.log 2>&1 &
+    ```
 
 ## Prepare RNA evidence
-```
+    ```
 #Purge adapters from sequences, and those being too short or having a quality score below 20 from RNA.
-nohup ../Annotation-Toolkit/run_cutadapt.sh -d 05_raw_RNA_MTW/ -o 05_cleaned_RNA_MTW/ -t 128 -l 5 -q 20 -Q 20 -f sample_trim.txt > run_cutadapt.log 2>&1 &
+    nohup ../Annotation-Toolkit/run_cutadapt.sh -d 05_raw_RNA_MTW/ -o 05_cleaned_RNA_MTW/ -t 128 -l 5 -q 20 -Q 20 -f sample_trim.txt > run_cutadapt.log 2>&1 &
 
 #Run RNA mapping with STAR and keep only reads flagged as 2.
-
-
-```
+    nohup python ../Annotation-Toolkit/run_rna_mapping_star_2pass.py --genomepath 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta --genomedir star_genome_index/ --wd 05_raw_RNA_MTW/ --out_dir 05_RNA_mapping_star_2pass_MTW/ --threads 128 > run_rna_mapping.log 2>&1 &
+    ```
  
 ## Run Braker3
 

@@ -4,6 +4,7 @@ import sys
 import argparse
 import subprocess
 import math
+import re
 
 def compute_genomeSAindex_nbases(genome_path):
     """
@@ -12,12 +13,6 @@ def compute_genomeSAindex_nbases(genome_path):
     The value is calculated as:
         floor(log2(total_genome_length) / 2) - 1
     and then taking the minimum between 14 and that value.
-    
-    Parameters:
-        genome_path (str): Path to the genome FASTA file.
-    
-    Returns:
-        int: The computed value to be used for --genomeSAindexNbases.
     """
     total_length = 0
     with open(genome_path, 'r') as fh:
@@ -25,12 +20,53 @@ def compute_genomeSAindex_nbases(genome_path):
             if line.startswith('>'):
                 continue
             total_length += len(line.strip())
-    # Calculate based on the formula: floor(log2(total_length)/2) - 1
     computed = int(math.log2(total_length) / 2) - 1
     return min(14, computed)
 
+def find_fastq_file(directory, pattern):
+    """
+    Search for a FASTQ file in 'directory' that starts with 'pattern'
+    and ends with one of the allowed extensions.
+    Allowed extensions: .fastq, .fq, .fastq.gz, .fq.gz
+    """
+    allowed_ext = [".fastq", ".fq", ".fastq.gz", ".fq.gz"]
+    for ext in allowed_ext:
+        candidate = os.path.join(directory, pattern + ext)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+def extract_sample_basename(filename):
+    """
+    Extract the sample basename and an optional ".cleaned" suffix from a filename.
+    
+    This function ignores files with "fastqc" (case-insensitive) and supports:
+      - Paired-end: e.g. a_muscle_02_1.cleaned.fq.gz or a_muscle_02_1.fq.gz
+      - Single-end: e.g. a_muscle_02.cleaned.fq.gz or a_muscle_02.fq.gz
+    
+    Returns a tuple (sample, suffix) where suffix is either ".cleaned" or an empty string.
+    """
+    if "fastqc" in filename.lower():
+        return None, None
+    # Paired-end pattern: capture sample and optional ".cleaned"
+    paired_pattern = re.compile(
+        r"^(?P<sample>.+)_[12](?P<cleaned>\.cleaned)?\.(?:fq|fastq)(?:\.gz)?$", re.IGNORECASE)
+    m = paired_pattern.match(filename)
+    if m:
+        sample = m.group("sample")
+        suffix = m.group("cleaned") if m.group("cleaned") is not None else ""
+        return sample, suffix
+    # Single-end pattern: capture sample and optional ".cleaned"
+    single_pattern = re.compile(
+        r"^(?P<sample>.+)(?P<cleaned>\.cleaned)?\.(?:fq|fastq)(?:\.gz)?$", re.IGNORECASE)
+    m = single_pattern.match(filename)
+    if m:
+        sample = m.group("sample")
+        suffix = m.group("cleaned") if m.group("cleaned") is not None else ""
+        return sample, suffix
+    return None, None
+
 def main():
-    # Parse command-line arguments (all parameters are required)
     parser = argparse.ArgumentParser(
         description="STAR mapping script converted from bash. All parameters are required."
     )
@@ -46,20 +82,16 @@ def main():
                         help="Number of threads to use")
     args = parser.parse_args()
 
-    # Log the full command-line invocation
     print("Command line:", " ".join(sys.argv))
-
-    # Create necessary directories if they don't exist
     os.makedirs(args.genomedir, exist_ok=True)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # Check if the STAR genome index already exists by looking for 'SAindex'
+    # Generate STAR genome index if not present.
     star_index_path = os.path.join(args.genomedir, "SAindex")
     if os.path.isdir(args.genomedir) and os.path.exists(star_index_path):
         print("STAR genome index already generated. Skipping.")
     else:
         print("STAR genome index not found. Generating...")
-        # Compute genomeSAindexNbases from the genome FASTA file
         genome_saindex_nbases = compute_genomeSAindex_nbases(args.genomepath)
         star_cmd = [
             "STAR",
@@ -72,32 +104,47 @@ def main():
         print("Running command:", " ".join(star_cmd))
         subprocess.run(star_cmd, check=True)
 
-    # Get unique basenames by scanning the working directory for files containing '.cleaned.fastq'
-    unique_basenames = set()
-    for filename in os.listdir(args.wd):
-        if ".cleaned.fastq" in filename:
-            # Mimic the bash 'cut' commands: take text before first dot, then text before first underscore.
-            base = filename.split('.')[0]
-            basename = base.split('_')[0]
-            unique_basenames.add(basename)
-    unique_basenames = sorted(unique_basenames)
+    # List files in the working directory.
+    all_files = os.listdir(args.wd)
+    print("Files found in working directory:", all_files)
+    
+    # Build a dictionary mapping each unique sample to its detected suffix (".cleaned" or "").
+    unique_samples = {}  # key: sample, value: suffix
+    allowed_ext = [".fastq", ".fq", ".fastq.gz", ".fq.gz"]
+    for filename in all_files:
+        if any(filename.lower().endswith(ext) for ext in allowed_ext):
+            sample, suffix = extract_sample_basename(filename)
+            if sample:
+                # If multiple files for a sample exist with inconsistent naming, warn.
+                if sample in unique_samples and unique_samples[sample] != suffix:
+                    print(f"Warning: Inconsistent naming for sample {sample}.")
+                unique_samples[sample] = suffix
+    unique_sample_names = sorted(unique_samples.keys())
+    print("Unique sample basenames found:", unique_sample_names)
 
-    # Process each unique basename
-    for basename in unique_basenames:
-        paired1 = os.path.join(args.wd, f"{basename}_1.cleaned.fastq")
-        paired2 = os.path.join(args.wd, f"{basename}_2.cleaned.fastq")
-        single  = os.path.join(args.wd, f"{basename}.cleaned.fastq")
+    def get_read_files_command(file_path):
+        # If file is gzipped, add zcat to uncompress on the fly.
+        return ["--readFilesCommand", "zcat"] if file_path and file_path.lower().endswith(".gz") else []
 
-        out_prefix   = os.path.join(args.out_dir, f"{basename}_2pass")
+    # Process each unique sample.
+    for sample in unique_sample_names:
+        suffix = unique_samples[sample]
+        # Look for paired-end files using the detected suffix.
+        paired1 = find_fastq_file(args.wd, f"{sample}_1{suffix}")
+        paired2 = find_fastq_file(args.wd, f"{sample}_2{suffix}")
+        # Alternatively, for single-end files:
+        single  = find_fastq_file(args.wd, f"{sample}{suffix}")
+
+        out_prefix   = os.path.join(args.out_dir, f"{sample}_2pass")
         log_progress = f"{out_prefix}Log.progress.out"
         sj_tab       = f"{out_prefix}SJ.out.tab"
-        bam_sorted   = os.path.join(args.out_dir, f"{basename}_2passAligned.sortedByCoord.out.bam")
-        bam_flag2    = os.path.join(args.out_dir, f"{basename}_2pass_flag2.bam")
+        bam_sorted   = os.path.join(args.out_dir, f"{sample}_2passAligned.sortedByCoord.out.bam")
+        bam_flag2    = os.path.join(args.out_dir, f"{sample}_2pass_flag2.bam")
 
-        # For paired-end FASTQ files
-        if os.path.isfile(paired1) and os.path.isfile(paired2):
+        if paired1 and paired2:
+            read_files_command = get_read_files_command(paired1)
             if os.path.isfile(log_progress) and os.path.isfile(sj_tab):
-                print(f"{basename}_1/2.cleaned.fastq has been mapped.")
+                print(f"{sample}: Paired FASTQ files have been mapped already.")
                 samtools_cmd = [
                     "samtools", "view", "-b", "-f", "2",
                     "-@", str(args.threads),
@@ -112,7 +159,8 @@ def main():
                     "--runMode", "alignReads",
                     "--twopassMode", "Basic",
                     "--genomeDir", args.genomedir,
-                    "--runThreadN", str(args.threads),
+                    "--runThreadN", str(args.threads)
+                ] + read_files_command + [
                     "--readFilesIn", paired1, paired2,
                     "--outSAMstrandField", "intronMotif",
                     "--outFileNamePrefix", out_prefix,
@@ -128,11 +176,10 @@ def main():
                 ]
                 print("Running command:", " ".join(samtools_cmd))
                 subprocess.run(samtools_cmd, check=True)
-
-        # For single-end FASTQ file
-        elif os.path.isfile(single):
+        elif single:
+            read_files_command = get_read_files_command(single)
             if os.path.isfile(log_progress) and os.path.isfile(sj_tab):
-                print(f"{basename}.cleaned.fastq has been mapped.")
+                print(f"{sample}: Single FASTQ file has been mapped already.")
                 samtools_cmd = [
                     "samtools", "view", "-b", "-f", "2",
                     "-@", str(args.threads),
@@ -147,7 +194,8 @@ def main():
                     "--runMode", "alignReads",
                     "--twopassMode", "Basic",
                     "--genomeDir", args.genomedir,
-                    "--runThreadN", str(args.threads),
+                    "--runThreadN", str(args.threads)
+                ] + read_files_command + [
                     "--readFilesIn", single,
                     "--outSAMstrandField", "intronMotif",
                     "--outFileNamePrefix", out_prefix,
@@ -164,7 +212,7 @@ def main():
                 print("Running command:", " ".join(samtools_cmd))
                 subprocess.run(samtools_cmd, check=True)
         else:
-            print(f"Error: Could not find paired or single-end FASTQ files for {basename}.")
+            print(f"Error: Could not find paired or single-end FASTQ files for sample {sample}.")
             sys.exit(1)
 
 if __name__ == '__main__':
