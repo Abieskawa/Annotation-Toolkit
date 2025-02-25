@@ -4,9 +4,9 @@ This repository is the home place for any tool I used to annotated the genome, i
 ## Check the received genome quality
 Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
 ### Check basics number of genome assembly
-    ```
-    python assembly_quality_check_v5.py {fasta file} 
-    ```
+```
+python assembly_quality_check_v5.py {fasta file} 
+```
 ### Check with BUSCO genome mode
 The miniprot and metaeuk mode are both recommended to apply. Please start a docker of BUSCO first and run the command below. It takes less an hour.
     ```
