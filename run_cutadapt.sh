@@ -5,14 +5,14 @@
 #
 # It supports front‐trimming for each sample via the -u (read1) and -U (read2)
 # options. The front‐trim values can be supplied either as a single number (applied
-# globally) or via a file (specified with -f) that contains either 2 or 3 columns:
+# globally) or via a file (specified with -f) that contains 2 columns:
 #
-#   2 columns: <sample_filename_prefix> <trimValue>
-#       (Both read1 and read2 will be trimmed by that many bases.)
+#   2 columns: <sample_filename_key> <trimValue>
+#       => For example, if your FASTQ files are named SRR26245751_1.fastq and
+#          SRR26245751_2.fastq, the file should contain one line for each read:
 #
-#   3 columns: <sample_filename_prefix> <trimValue_R1> <trimValue_R2>
-#       (For example, if your FASTQ files are named SRR26245751_1.fastq and
-#        SRR26245751_2.fastq then the file should contain keys “SRR26245751_1” and “SRR26245751_2”.)
+#          SRR26245751_1 10
+#          SRR26245751_2 10
 #
 # Adapter sequences can be specified via -a1 and -a2. If not provided, the script will
 # look for a file named "adapter_list.txt" in the same directory as this script; if that
@@ -45,7 +45,7 @@ threads=16
 min_length=5         # Minimum read length (-m option)
 quality1=20          # Quality cutoff for read1 (-q option)
 quality2=20          # Quality cutoff for read2 (-Q option)
-trim_front=""        # Either a single number (global) or a filename with per-sample trim values
+trim_front=""        # Either a single number (global) or a filename with per-read trim values
 
 # Adapter parameters. If provided, these override the defaults.
 adapter1=""
@@ -73,12 +73,12 @@ Example (global front trimming):
 Example (per-sample trimming):
   $0 -d /path/to/05_raw_RNA -o /path/to/05_cleaned_RNA -t 16 -l 5 -q 20 -Q 20 -f sample_trim.txt
 
-If you supply a trim file to -f, it can have either 2 or 3 columns per line:
-  2 columns: <sample_filename_prefix> <trimValue>
-    => The same trim value is used for both read1 and read2.
-  3 columns: <sample_filename_prefix> <trimValue_R1> <trimValue_R2>
-    => For example, if your FASTQ files are named SRR26245751_1.fastq and
-       SRR26245751_2.fastq, then the file should contain keys “SRR26245751_1” and “SRR26245751_2”.
+If you supply a trim file to -f, it must have 2 columns per line:
+  <sample_filename_key> <trimValue>
+For paired‐end data, the keys must match the actual filenames:
+  e.g.,
+    SRR26245751_1 10
+    SRR26245751_2 10
 
 Options:
   -d      Working directory (required)
@@ -87,7 +87,7 @@ Options:
   -l      Minimum read length (default: $min_length)
   -q      Quality cutoff for read1 (default: $quality1)
   -Q      Quality cutoff for read2 (default: $quality2)
-  -f      (Optional) Either a single number or a filename with sample-specific trimming values
+  -f      (Optional) Either a single number or a filename with per-read trimming values
   -a1     (Optional) Adapter sequence for read1
   -a2     (Optional) Adapter sequence for read2
   -? or --help   Display this help message
@@ -189,7 +189,7 @@ fi
 ############################################
 # Process the -f parameter (front trim)
 ############################################
-# If -f is provided, it can be a file (with 2 or 3 columns) or a global number.
+# If -f is provided, it can be a file (with 2 columns) or a global number.
 declare global_trim_R1=""
 declare global_trim_R2=""
 declare -A per_sample_trim_R1
@@ -203,13 +203,17 @@ if [[ -n "$trim_front" ]]; then
       line=$(echo "$line" | tr -d '\r')
       [[ -z "$line" || "$line" =~ ^# ]] && continue
       fields=( $line )
-      sample="${fields[0]}"
       if [[ ${#fields[@]} -eq 2 ]]; then
-        per_sample_trim_R1["$sample"]="${fields[1]}"
-        per_sample_trim_R2["$sample"]="${fields[1]}"
-      elif [[ ${#fields[@]} -eq 3 ]]; then
-        per_sample_trim_R1["$sample"]="${fields[1]}"
-        per_sample_trim_R2["$sample"]="${fields[2]}"
+        sample="${fields[0]}"
+        trim_value="${fields[1]}"
+        # Expecting keys ending with _1 or _2; assign accordingly.
+        if [[ "$sample" =~ _1$ ]]; then
+          per_sample_trim_R1["$sample"]="$trim_value"
+        elif [[ "$sample" =~ _2$ ]]; then
+          per_sample_trim_R2["$sample"]="$trim_value"
+        else
+          echo "Warning: Trim key '$sample' does not match expected pattern (_1 or _2); skipping."
+        fi
       else
         echo "Warning: Unexpected number of columns in trim file line: $line"
       fi

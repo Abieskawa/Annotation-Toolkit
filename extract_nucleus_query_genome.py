@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 import argparse
-import re
 from Bio import SeqIO
 
 def main():
     # Set up command-line argument parsing.
     parser = argparse.ArgumentParser(
-        description="Extract longest N chromosomes and special sequences (e.g. mitochondria, chloroplast) from a FASTA file."
+        description="Extract longest N nuclear chromosomes and special sequences (e.g. mitochondria, chloroplast, scaffold names) from a FASTA file, outputting to separate files."
     )
     parser.add_argument(
         "-i", "--input", required=True,
         help="Input FASTA file containing sequences."
     )
     parser.add_argument(
-        "-o", "--output", required=True,
-        help="Output FASTA file to write the extracted sequences."
+        "-on", "--output_nuclear", required=True,
+        help="Output FASTA file for nuclear sequences (longest chromosomes)."
+    )
+    parser.add_argument(
+        "-os", "--output_special", required=False,
+        help="Output FASTA file for special sequences (e.g. mitochondria, chloroplast, scaffold names)."
     )
     parser.add_argument(
         "-n", "--num", type=int, required=True,
-        help="Number of longest chromosomes to extract."
+        help="Number of longest nuclear chromosomes to extract."
     )
     parser.add_argument(
         "-s", "--special", nargs="+",
-        help="List of keywords to locate special sequences (e.g. 'mitochondria' 'chloroplast')."
+        help="List of keywords to locate special sequences (e.g. 'mitochondria', 'chloroplast', scaffold names)."
     )
     args = parser.parse_args()
 
@@ -32,32 +35,31 @@ def main():
         print("No sequences found in the input file.")
         return
 
-    # Sort records by sequence length in descending order and extract the top N.
+    # Extract nuclear sequences: sort records by sequence length and take the top N.
     sorted_records = sorted(records, key=lambda r: len(r.seq), reverse=True)
-    longest_chromosomes = sorted_records[:args.num]
+    nuclear_records = sorted_records[:args.num]
+    SeqIO.write(nuclear_records, args.output_nuclear, "fasta")
+    print(f"Nuclear extraction complete. {len(nuclear_records)} sequences written to {args.output_nuclear}.")
 
-    # Search for each special sequence by keyword in the record description using an exact word match.
-    special_records = []
+    # Extract special sequences if keywords and an output file are provided.
     if args.special:
-        for keyword in args.special:
-            # Build a regex pattern that matches the exact keyword as a whole word (case-insensitive)
-            pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
-            found = False
-            for record in records:
-                if re.search(pattern, record.description.lower()):
-                    if record not in special_records:
-                        special_records.append(record)
-                    found = True
-                    break
-            if not found:
-                print(f"Warning: Special sequence not found for keyword: {keyword}")
-
-    # Combine the longest chromosomes and special sequences.
-    extracted_records = longest_chromosomes + special_records
-
-    # Write the extracted sequences to the output FASTA file.
-    SeqIO.write(extracted_records, args.output, "fasta")
-    print(f"Extraction complete. {len(extracted_records)} sequences written to {args.output}.")
+        if not args.output_special:
+            print("Special keywords provided but no output file for special sequences specified. Skipping special extraction.")
+        else:
+            special_records = []
+            for keyword in args.special:
+                found = False
+                for record in records:
+                    # Use a simple substring search (case-insensitive).
+                    if keyword.lower() in record.description.lower():
+                        if record not in special_records:
+                            special_records.append(record)
+                        found = True
+                        break
+                if not found:
+                    print(f"Warning: Special sequence not found for keyword: {keyword}")
+            SeqIO.write(special_records, args.output_special, "fasta")
+            print(f"Special extraction complete. {len(special_records)} sequences written to {args.output_special}.")
 
 if __name__ == "__main__":
     main()

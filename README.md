@@ -36,7 +36,7 @@ cat MTW_genome.fasta | python3 {the path of this directory}/fcs.py clean genome 
 
 ## (Optional) If one wants to extract mitochondria and nucleus chromosomes (Longest)
 ```
-
+python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
 
 ## Run repeat soft masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
