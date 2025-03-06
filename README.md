@@ -38,7 +38,8 @@ mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} 
 ```
 python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
-# Repeat soft mask with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
+# Repeat soft masking
+Run repeat masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
 ```
 #Repeat masking with RepeatMasker and RepeatModeler
 nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta -o /output/asian_hard_clam -t 128 -l /output/Lib_fish/famdb -s 'Bivalvia' -f 'asian_hard_clam' --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
