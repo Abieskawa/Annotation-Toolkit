@@ -1,14 +1,14 @@
 # Annotation-Toolkit
-This repository is the home place for any tool I used to annotated the genome, including the command line, evaluation and download tool.
+This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool.
 
-## Check the received genome quality
+# Check the received genome quality
 Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
 ### Check basics number of genome assembly
 ```
 python assembly_quality_check_v5.py {fasta file} 
 ```
 ### Check with BUSCO genome mode
-The miniprot and metaeuk mode are both recommended to apply. Please start a docker of BUSCO first and run the command below. It takes less an hour.
+The miniprot is recommended to apply here. Please start a docker of BUSCO first and run the command below. It takes less an hour (threads = 128).
 ```
 nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o asian_hard_clam_clean_genome_miniprot --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
 ```
@@ -19,7 +19,7 @@ gx report info: https://github.com/ncbi/fcs/wiki/FCS-GX-output
 ```
 python3 {the path of this directory}/fcs.py screen genome --fasta {genome fasta} --out-dir {output directory} --gx-db "$GXDB_LOC/gxdb" --tax-id {tax id}
 
-#replace all in fifth column to EXCLUDE.
+#replace all in fifth column to EXCLUDE (depends on user).
 #genome fasta basename, ex. MTW_genome.fa -> MTW_genome
 #tax id: hypothesized species or the related one
 
@@ -31,15 +31,14 @@ cat MTW_genome.fasta | python3 {the path of this directory}/fcs.py clean genome 
 
 ## (Optional) Check which scaffold is mitochondria genome
 ```
-
+mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges}
 ```
 
 ## (Optional) If one wants to extract mitochondria and nucleus chromosomes (Longest)
 ```
 python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
-
-## Run repeat soft masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
+# Repeat soft mask with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
 ```
 #Repeat masking with RepeatMasker and RepeatModeler
 nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta -o /output/asian_hard_clam -t 128 -l /output/Lib_fish/famdb -s 'Bivalvia' -f 'asian_hard_clam' --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
@@ -47,12 +46,20 @@ nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito
 #Run repeat masking again with TRF
 nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome_keep_nuclear_mito.fasta.masked -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
 ```
-
-## Run fasta simplification
-Without this steps, Braker3 script is still executable, but it will complain annoying messages. 
+# Structural Annotation 
+## Run mitochondria Annotation with mitos
+Version: runmitos.py 2.1.9
 ```
-perl ../Annotation-Toolkit/simplifyFastaHeaders.pl braker_odbv12v0_Metazoa_UniProtKB_6447_ncbi_6580.fa prot braker_odbv12v0_Metazoa_UniProtKB_6447_ncbi_6580_s.fa simplified_asian_hard_clam.headers
-``` 
+runmitos.py -i 00_annotation_start_genome/MTW_genome_clean_mitochondria.fasta -c 5 -R ../MITOS2-refdata/ -r ../MITOS2-refdata/refseq89m -o 06_mitos/ --debug
+```
+
+## Run ncRNA Annotation
+```
+nohup bash -c "time cmscan --cpu 128 -Z 2081.464022 --cut_ga --rfam --
+nohmmonly --tblout 06_ncRNA/asian_hard_clam_ncRNA.tblout --fmt 2 --clanin ~/output/Rfam_db/Rfam.clanin --oskip ~/output/Rfam_db/Rfam.cm 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta > 06_ncRNA/asian_hard_clam_ncRNA.cmscan 2> run_cmscan.log" > run_cmscan_time.log 2>&1 &
+
+nohup bash -c "time tRNAscan-SE -E -I --gff 06_ncRNA/asian_hard_clam_tRNAscan.gff --stats 06_ncRNA/asian_hard_clam_tRNAscan.stats -d --thread 128 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta > run_asian_hard_clam_tRNA.log 2>&1" > run_asian_hard_clam_tRNAscan_time.log 2>&1 &
+```
 
 ## Prepare protein evidence:
 The script was modified with some informatiuon provided in https://github.com/gatech-genemark/ProtHint/issues/39
@@ -60,6 +67,11 @@ Users should download odb12v0_level2species.tab.gz, odb12v0_levels.tab.gz, odb12
 ```
 nohup python ../Annotation-Toolkit/extract_clade_proteins.py --clade Mollusca --levels odb12v0_levels.tab.gz --level2species odb12v0_level2species.tab.gz --fasta odb12v0_aa_fasta.gz --output Mollusca.fa --report-species --report-species --speciesmap odb12v0_species.tab.gz > extract_mollusca.log 2>&1 &
 ```
+## Run fasta simplification
+Without this steps, Braker3 script is still executable, but it will complain annoying messages. 
+```
+perl ../Annotation-Toolkit/simplifyFastaHeaders.pl braker_odbv12v0_Metazoa_UniProtKB_6447_ncbi_6580.fa prot braker_odbv12v0_Metazoa_UniProtKB_6447_ncbi_6580_s.fa simplified_asian_hard_clam.headers
+``` 
 
 ## Prepare RNA evidence
 ```
@@ -71,7 +83,11 @@ nohup python ../Annotation-Toolkit/run_rna_mapping_star_2pass.py --genomepath 00
 ```
  
 ## Run Braker3
-
+```
+nohup bash -c "time (../Annotation-Toolkit/run_braker3.sh -t 120 -g 04_TRF_mask/MTW_geno
+me_clean_nuclear.combined.masked -p ../braker3_protein_evidence/odbv12v0_Mollusca_UniProtKB_6447_ncbi_6580_s.fa -s meretrix_taiwanica_v3 -w 
+06_braker3_v3/ -b 05_RNA_mapping_star_2pass_MTW/ -l mollusca_odb10  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
+```
 
 ## Run gtf2gff
 ```
@@ -79,10 +95,23 @@ sudo chmod 777 {wd}
 perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --gff3
 ```
 
-## Run BUSCO proteome
+## Run evaluation of Braker annotation 
+In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the regulation of gff file version is different version, please check my source code before applying my source code. 
 ```
-busco -i 06_braker3/braker.aa -m proteins -l mollusca_odb10 -c 128 -o asian_hard_clam_v1 --out_path BUSCO/ > run_busco_v1.log
+nohup python ../Annotation-Toolkit/eva_annotation.py psa -g 06_braker3_v3/braker.gff -f 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta -b asian_hard_clam_v3 -o 06_braker3_v3 -p 06_braker3_v3/braker.aa --busco_lineage mollusca_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/asian_hard_clam/ --omark_dir omark_omamer_output > run_eva_braker3_v3.log 2>&1 &
 ```
+## Prepare protein before running Functional annotation
+Rename the output with specified prefix (prefix_{entry name}) and rename protein sequence and remove its stop codon.   
+```
+python ../Annotation-Toolkit/rename_gtf.py --gtf 06_braker3_v3/braker.gtf --prefix M_tai --out 07_renamed_braker3_v3/braker_renamed.gtf
+
+perl ../Annotation-Toolkit/gtf2gff.pl <braker_renamed.gtf --out=braker_renamed.gff --printExon --printUTR --gff3
+
+python ../../Annotation-Toolkit/rename_protein_cds.py ../06_braker3_v3/braker.aa braker_renamed.aa M_tai
+
+python ../../Annotation-Toolkit/remove_protein_star.py -I braker_renamed.aa -O braker_renamed_wout_asterisk.aa -L remove_star.log
+```
+
 
 ## Prepare NR protein database
 ### Downolad NR DB
@@ -119,8 +148,9 @@ nohup python3 ../../Annotation-Toolkit/downloadkaas.py "https://www.genome.jp/ka
 
 ## Run InterProScan
 We used v5.73-104.0, so the script eva_annotation.py and interproscan_extract might require modification if the version is not this one.
+Sometimes, it might require to adjust the memory limitation, be careful to any error messages.
 ```
-nohup bash -c "time (interproscan.sh -i ../07_braker3_v7_renamed/braker_renamed_removestar.aa -goterms -f tsv --output-file-base interproscan_result -cpu 128 > ../run_interproscan.log 2>&1)" 2>../run_interproscan_time.log > /dev/null & 
+nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i 07_renamed_braker3_v3/braker_renamed_wout_asterisk.aa -goterms -f tsv --output-file-base 11_interproscan/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
 
 python ../interproscan_evaluate.py -f ../09_rename_braker3_v6/braker_renamed_wout_asterisk.aa -i interproscan_result.tsv -o beltfish
 

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 
 # -----------------------------------------------------------------------
-# 1) Utility: Parse GFF attributes
+# Utility: Parse GFF attributes
 # -----------------------------------------------------------------------
 def parse_attributes(attr_str):
     """Parse GFF attributes in the form key=value;... and return a dict."""
@@ -26,6 +26,32 @@ def parse_attributes(attr_str):
     return attrs
 
 # -----------------------------------------------------------------------
+# Helper: Ensure Unique Entries Based on 'ID'
+# -----------------------------------------------------------------------
+def ensure_unique_entries(df, entry_type):
+    """
+    Checks the DataFrame for duplicate IDs and aggregates entries if necessary.
+    Returns a tuple: (modified DataFrame, warning message string).
+    """
+    dup = df[df['ID'].duplicated(keep=False)]
+    warning_msg = ""
+    if not dup.empty:
+        warning_msg = f"Warning: Duplicate {entry_type} IDs found: {dup['ID'].unique().tolist()}\n"
+        df = df.groupby('ID', as_index=False).agg({
+            'seqid': 'first',
+            'source': 'first',
+            'type': 'first',
+            'start': 'min',
+            'end': 'max',
+            'score': 'first',
+            'strand': 'first',
+            'phase': 'first',
+            'attributes': 'first',
+            'parsed_attrs': 'first'
+        })
+    return df, warning_msg
+
+# -----------------------------------------------------------------------
 # Helper: Custom binning with non-overlapping ranges and custom labels
 # -----------------------------------------------------------------------
 def custom_binning(lengths, bin_size, thresh):
@@ -33,22 +59,18 @@ def custom_binning(lengths, bin_size, thresh):
     Bins the data with the following logic:
       - First bin: values < bin_size; label: "<{bin_size}"
       - Subsequent bins: each covers values from (previous bin's maximum + 1) to the current boundary.
-        For example, if bin_size==1000 then second bin is "1001-2000", third is "2001-3000", etc.
       - An extra bin: values > thresh; label: ">{thresh}"
     Returns three lists: centers (for bar placement), counts, and labels.
     """
     counts = []
     labels = []
     centers = []
-    # First bin: values strictly less than bin_size.
     first_count = sum(1 for x in lengths if x < bin_size)
     counts.append(first_count)
     labels.append(f"<{bin_size}")
-    # For center, we assume values start at 0 so we use the midpoint of [0, bin_size-1].
     first_center = (0 + (bin_size - 1)) / 2
     centers.append(first_center)
     
-    # Subsequent bins: each covers from (previous bin maximum + 1) to (current bin boundary)
     lower = bin_size + 1
     upper = bin_size * 2
     while upper <= thresh:
@@ -60,7 +82,6 @@ def custom_binning(lengths, bin_size, thresh):
         lower = upper + 1
         upper += bin_size
         
-    # Extra bin: values greater than thresh.
     extra_count = sum(1 for x in lengths if x > thresh)
     counts.append(extra_count)
     labels.append(f">{thresh}")
@@ -74,12 +95,7 @@ def custom_binning(lengths, bin_size, thresh):
 # -----------------------------------------------------------------------
 def plot_bar(lengths, med, out_file, bin_size, thresh, xlabel):
     """
-    Plots a histogram of 'lengths' using custom binning:
-      - The first bin is labeled "<{bin_size}"
-      - Each subsequent bin is labeled as "previous+1-current" (e.g. "1001-2000")
-      - An extra bin is added for values > thresh.
-    A vertical dashed red line is drawn at the median (in actual value units).
-    The plot is saved to 'out_file'.
+    Plots a histogram of 'lengths' using custom binning and saves the plot.
     """
     if not lengths:
         print("No lengths to plot.")
@@ -104,9 +120,7 @@ def plot_bar(lengths, med, out_file, bin_size, thresh, xlabel):
 # -----------------------------------------------------------------------
 def check_codon(mrna, grp, codon_type):
     """
-    Return an error message if the mRNA lacks exactly one codon of 'codon_type'.
-    We check the start/stop codons that are within the mRNA's [start, end],
-    same seqid, same strand, same Parent ID.
+    Checks that an mRNA has exactly one codon of 'codon_type'.
     """
     mrna_id     = mrna["ID"]
     mrna_seqid  = mrna["seqid"]
@@ -133,7 +147,6 @@ def check_codon(mrna, grp, codon_type):
 
 # -----------------------------------------------------------------------
 # Protein Structural Annotation (PSA) Mode
-# (Processes a GFF file, runs QC checks, and generates a gene length histogram)
 # -----------------------------------------------------------------------
 def run_psa(args):
     cols = ['seqid','source','type','start','end','score','strand','phase','attributes']
@@ -145,8 +158,19 @@ def run_psa(args):
     df['ID'] = df['parsed_attrs'].apply(lambda d: d.get('ID'))
     df['Parent'] = df['parsed_attrs'].apply(lambda d: d.get('Parent'))
 
+    # Subset feature-specific dataframes and ensure unique entries
     genes_df = df[df['type'] == "gene"].copy()
+    genes_df, gene_dup_msg = ensure_unique_entries(genes_df, "gene")
+    
     pseudos_df = df[df['type'] == "pseudogene"].copy()
+    pseudos_df, pseudo_dup_msg = ensure_unique_entries(pseudos_df, "pseudogene")
+    
+    mRNA_df = df[df['type'] == 'mRNA'].copy()
+    mRNA_df, mrna_dup_msg = ensure_unique_entries(mRNA_df, "mRNA")
+    
+    exon_df = df[df['type'] == "exon"].copy()
+    exon_df, exon_dup_msg = ensure_unique_entries(exon_df, "exon")
+    
     n_genes = genes_df.shape[0]
     n_pseudos = pseudos_df.shape[0]
 
@@ -163,7 +187,6 @@ def run_psa(args):
 
     start_errs = []
     stop_errs = []
-    mRNA_df = df[df['type'] == 'mRNA'].copy()
     if not skip_codon_check:
         if gene_biotype_available:
             gene_info = genes_df[['ID', 'gene_biotype']].rename(columns={'ID': 'gene'})
@@ -191,7 +214,7 @@ def run_psa(args):
                 if err:
                     stop_errs.append(err)
 
-    exon_df = df[df['type'] == "exon"].copy()
+    # Calculate single exon genes using unique mRNA and exon entries.
     if gene_biotype_available:
         gene_info = genes_df[['ID', 'gene_biotype']].rename(columns={'ID': 'gene'})
         mRNA_biotype = df[df['type'] == 'mRNA'].merge(gene_info, left_on='Parent', right_on='gene', how='left')
@@ -208,30 +231,23 @@ def run_psa(args):
                 single_exon_genes += 1
     else:
         n_exon = exon_df.shape[0]
-        mRNA_gene_map = df[df['type'] == 'mRNA'][['ID','Parent']].rename(columns={'Parent':'Gene_ID'})
+        mRNA_gene_map = mRNA_df[['ID','Parent']].rename(columns={'Parent':'Gene_ID'})
         exons_merged = exon_df.merge(mRNA_gene_map, left_on='Parent', right_on='ID', how='left', suffixes=('_exon','_mRNA'))
         exon_counts = exons_merged.groupby('Gene_ID').size()
-        all_genes = genes_df.copy()
+        unique_genes = genes_df.copy()
         single_exon_genes = 0
-        for gid in all_genes['ID']:
+        for gid in unique_genes['ID']:
             if exon_counts.get(gid, 0) == 1:
                 single_exon_genes += 1
 
     n_mrna = mRNA_df.shape[0]
 
+    # Process gene lengths using unique gene entries.
     all_genes = genes_df.copy()
     if not all_genes.empty:
         all_genes["gene_length"] = (all_genes["end"] - all_genes["start"]).abs()
         gene_lengths = all_genes["gene_length"].tolist()
-        gene_lengths.sort()
-        if gene_lengths:
-            mid = len(gene_lengths) // 2
-            if len(gene_lengths) % 2 == 1:
-                median_len = gene_lengths[mid]
-            else:
-                median_len = (gene_lengths[mid-1] + gene_lengths[mid]) / 2
-        else:
-            median_len = 0
+        median_len = statistics.median(gene_lengths) if gene_lengths else 0
     else:
         gene_lengths = []
         median_len = 0
@@ -242,18 +258,19 @@ def run_psa(args):
         pc_genes = genes_df[genes_df["gene_biotype"] == "protein_coding"]
         npc_genes = genes_df[genes_df["gene_biotype"] != "protein_coding"]
         lengths_pc = (pc_genes["end"] - pc_genes["start"]).abs().tolist() if not pc_genes.empty else []
-        med_len_pc = int(statistics.median(lengths_pc)) if lengths_pc else 0
+        med_len_pc = statistics.median(lengths_pc) if lengths_pc else 0
         lengths_npc = (npc_genes["end"] - npc_genes["start"]).abs().tolist() if not npc_genes.empty else []
-        med_len_npc = int(statistics.median(lengths_npc)) if lengths_npc else 0
+        med_len_npc = statistics.median(lengths_npc) if lengths_npc else 0
     else:
         med_len_pc = 0
         med_len_npc = 0
 
     base = args.basename
-    qc_output_file = f"{base}_qc.txt"
-    qc_stat_file   = f"{base}_statistic.txt"
-    qc_extra_file  = f"{base}_additional_validation.txt"
-    qc_plot_file   = f"{base}_gene_length_histogram.png"
+    outdir = args.outdir
+    qc_output_file = os.path.join(outdir, f"{base}_qc.txt")
+    qc_stat_file   = os.path.join(outdir, f"{base}_statistic.txt")
+    qc_extra_file  = os.path.join(outdir, f"{base}_additional_validation.txt")
+    qc_plot_file   = os.path.join(outdir, f"{base}_gene_length_histogram.png")
 
     subprocess.run([
         "gff3_QC",
@@ -268,21 +285,36 @@ def run_psa(args):
 
     with open(qc_extra_file, 'w') as f:
         f.write("=== Additional Validation Checks ===\n\n")
+        # Report any duplicate warnings for each feature type.
+        if gene_dup_msg:
+            f.write(gene_dup_msg)
+        if pseudo_dup_msg:
+            f.write(pseudo_dup_msg)
+        if mrna_dup_msg:
+            f.write(mrna_dup_msg)
+        if exon_dup_msg:
+            f.write(exon_dup_msg)
+        f.write("\n")
         if not skip_codon_check:
-            f.write(f"Stop codon issues: {len(stop_errs)}\n")
-            for err in stop_errs:
-                f.write(err + "\n")
             f.write(f"\nStart codon issues: {len(start_errs)}\n")
+            f.write(f"Stop codon issues: {len(stop_errs)}\n")
+            f.write(f"******Details******\n")
+            f.write(f"Start codon issues\n")
             for err in start_errs:
                 f.write(err + "\n")
+            f.write(f"==================================\n")
+            f.write(f"Stop codon issues\n")
+            for err in stop_errs:
+                f.write(err + "\n")
+            f.write(f"==================================\n")
         else:
             f.write("Skipping codon checks (gene_biotype present or source is 'Gnomon').\n")
         f.write("\n=== Summary Stats ===\n")
-        f.write(f"Genes: {n_genes}\n")
-        f.write(f"Pseudogenes: {n_pseudos}\n")
+        f.write(f"Genes (unique): {n_genes}\n")
+        f.write(f"Pseudogenes (unique): {n_pseudos}\n")
         f.write(f"Single-exon genes (Protein-coding if available): {single_exon_genes}\n")
-        f.write(f"mRNAs: {n_mrna}\n")
-        f.write(f"Exons (Protein-coding if available): {n_exon}\n")
+        f.write(f"mRNAs (unique): {n_mrna}\n")
+        f.write(f"Exons (unique, Protein-coding if available): {n_exon}\n")
         f.write(f"Median gene length (all genes): {median_len}\n")
         if gene_biotype_available and biotype_counts is not None:
             f.write("\nSeparate median lengths:\n")
@@ -291,6 +323,73 @@ def run_psa(args):
             f.write("\nGene biotype counts:\n")
             for bt, count in biotype_counts.items():
                 f.write(f"  {bt}: {count}\n")
+        # If a protein FASTA file is provided, count the total sequences.
+        if args.protein:
+            try:
+                with open(args.protein, 'r') as pf:
+                    protein_count = sum(1 for line in pf if line.startswith('>'))
+                f.write(f"\nProtein FASTA total sequences: {protein_count}\n")
+            except Exception as e:
+                f.write(f"\nError reading protein FASTA file: {e}\n")
+
+    # Use the basename as the BUSCO basename
+    busco_basename = args.basename
+
+    # --- Begin BUSCO analysis via Docker (if BUSCO parameters are provided) ---
+    if (args.protein and args.busco_lineage and args.threads is not None and args.busco_out_path):
+        with open(args.protein, 'r') as pf:
+            protein_count_dummy = sum(1 for line in pf if line.startswith('>'))
+        print("Running BUSCO analysis using Docker...")
+        protein_abs = os.path.abspath(args.protein)
+        protein_dir = os.path.dirname(protein_abs)
+        # Determine mount directory and container BUSCO output path:
+        host_busco_out = os.path.abspath(args.busco_out_path)
+        if args.busco_workdir:
+            mount_dir = os.path.abspath(args.busco_workdir)
+            container_busco_out = os.path.basename(host_busco_out)
+        else:
+            mount_dir = os.path.dirname(host_busco_out)
+            container_busco_out = os.path.basename(host_busco_out)
+        # Ensure the host BUSCO output directory exists.
+        full_host_busco_out = os.path.join(mount_dir, container_busco_out)
+        os.makedirs(full_host_busco_out, exist_ok=True)
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{os.path.abspath(protein_dir)}:/data",
+            "-v", f"{mount_dir}:/output",
+            "-w", "/output",
+            args.busco_docker_image,
+            "busco",
+            "-i", f"/data/{os.path.basename(protein_abs)}",
+            "-m", "proteins",
+            "-l", args.busco_lineage,
+            "-c", str(args.threads),
+            "-o", busco_basename,
+            "--out_path", f"/output/{container_busco_out}"
+        ]
+        result_busco = subprocess.run(docker_cmd, check=True, capture_output=True, text=True)
+        with open(qc_extra_file, 'a') as f:
+            f.write("\n=== BUSCO Analysis ===\n")
+            f.write(result_busco.stdout)
+        print("BUSCO analysis completed.")
+    # --- End BUSCO analysis ---
+
+    # --- Begin OMArk analysis via conda (if omark parameters are provided) ---
+    if (args.omark_dir and args.protein and args.threads is not None):
+        print("Running OMArk analysis using conda run...")
+        # Get the absolute path of run_omark.sh (assumed to be in the same directory as this script)
+        script_dir = os.path.abspath(os.path.dirname(__file__))
+        run_omark_path = os.path.join(script_dir, "run_omark.sh")
+        omark_cmd = [
+            "conda", "run", "-n", "omark_omamer", "bash", "-c",
+            f"{run_omark_path} -i {args.protein} -base {busco_basename} -d {args.omark_dir}/{busco_basename} -t {args.threads}"
+        ]
+        result_omark = subprocess.run(omark_cmd, check=True, capture_output=True, text=True)
+        with open(qc_extra_file, 'a') as f:
+            f.write("\n=== OMArk Analysis ===\n")
+            f.write(result_omark.stdout)
+        print("OMArk analysis completed.")
+    # --- End OMArk analysis ---
 
     print(f"Done. Additional checks in '{qc_extra_file}', histogram in '{qc_plot_file}'.")
 
@@ -301,7 +400,7 @@ def run_interpro(args):
     import re
     proteins = set()
     genes = set()
-    with open(args.fasta, "r") as f:
+    with open(args.protein, "r") as f:
         for line in f:
             if line.startswith(">"):
                 protein_id = line.strip().split()[0][1:]
@@ -389,7 +488,6 @@ def run_interpro(args):
 # KAAS Processing
 # -----------------------------------------------------------------------
 def run_kaas(args):
-    # Modified: Use args.query instead of args.file for clarity.
     file_path = args.query
     out_dir = args.outdir
     if not os.path.exists(out_dir):
@@ -435,7 +533,6 @@ def run_kaas(args):
 
     print(f"Annotated gene list saved to: {gene_out_file}")
 
-    # New code: Write a summary file with the above information.
     summary_file = os.path.join(out_dir, "kaas_summary.txt")
     with open(summary_file, "w", encoding="utf-8") as sf:
         sf.write("\n".join(summary_lines))
@@ -445,31 +542,23 @@ def run_kaas(args):
 # Diamond BLASTP to NR Processing ("diamond-nr" mode)
 # -----------------------------------------------------------------------
 def run_nr(args):
-    """
-    Evaluate Diamond BLASTP TSV output (NR database mode) and compute
-    protein/gene-level annotation percentages, including counts for uncharacterized,
-    hypothetical, low quality, and unnamed proteins, plus top 3 species.
-    The detailed summary is written to a text file.
-    """
-    # 1. Read protein IDs & gene IDs from FASTA
     proteins = set()
     genes = set()
-    with open(args.fasta, "r") as f:
+    with open(args.protein, "r") as f:
         for line in f:
             if line.startswith(">"):
-                protein_id = line.strip().split()[0][1:]  # e.g., "T_jap_g41.p1"
+                protein_id = line.strip().split()[0][1:]
                 proteins.add(protein_id)
                 gene_id = re.sub(r"\.p\d+$", "", protein_id)
                 genes.add(gene_id)
 
-    # 2. Parse Diamond TSV
     hits_protein = set()
     hits_gene = set()
 
-    unchar_proteins = set()      # "uncharacterized"
-    hypot_proteins = set()       # "hypothetical protein"
-    low_quality_proteins = set() # "low quality protein"
-    unnamed_proteins = set()     # "unnamed protein product"
+    unchar_proteins = set()
+    hypot_proteins = set()
+    low_quality_proteins = set()
+    unnamed_proteins = set()
 
     unchar_genes = set()
     hypot_genes = set()
@@ -628,7 +717,6 @@ def run_nr(args):
     informative_genes_file = f"{args.outprefix}.informative_gene_list.tsv"
     output_lines.append(f"Informative gene list written to: {informative_genes_file}")
     output_lines.append("")
-    # New lines: top three species total hits and ratio
     if species_counter:
         most_common_3 = species_counter.most_common(3)
         top_three_sum = sum(count for spec, count in most_common_3)
@@ -665,24 +753,31 @@ def main():
 
     psa_parser = subparsers.add_parser("psa", help="Protein Structural Annotation mode (process GFF QC and gene length histogram).")
     psa_parser.add_argument("-g", "--gff", required=True, help="Input GFF file")
-    psa_parser.add_argument("-f", "--fasta", required=True, help="Input FASTA file")
+    psa_parser.add_argument("-f", "--fasta", required=True, help="Input genome FASTA file (.fna)")
     psa_parser.add_argument("-b", "--basename", required=True, help="Base name for output files")
+    psa_parser.add_argument("-o", "--outdir", default=".", help="Output directory for PSA mode files (default: current directory)")
+    psa_parser.add_argument("-p", "--protein", help="Protein sequence provided for BUSCO (ex. braker.aa path)")
+    psa_parser.add_argument("--busco_lineage", help="BUSCO lineage (e.g. bunco lineage)")
+    psa_parser.add_argument("-t", "--threads", type=int, help="Number of threads for BUSCO and OMArk")
+    psa_parser.add_argument("--busco_out_path", help="Full host path for BUSCO results output (this directory will be mounted under /output in the container)")
+    psa_parser.add_argument("--busco_docker_image", default="busco/busco:latest", help="Docker image for BUSCO analysis (default: busco/busco:latest)")
+    psa_parser.add_argument("--busco_workdir", help="Optional: Docker working directory to mount as /output. If provided, it is used as the container's working directory.")
+    psa_parser.add_argument("--omark_dir", help="Directory for OMArk run output (for -d option)")
     psa_parser.set_defaults(func=run_psa)
 
     ip = subparsers.add_parser("interpro", help="Process an InterProScan TSV file.")
-    ip.add_argument("-f", "--fasta", required=True, help="Input protein FASTA file")
+    ip.add_argument("-p", "--protein", required=True, help="Input protein FASTA file")
     ip.add_argument("-i", "--interpro_tsv", required=True, help="InterProScan TSV file")
     ip.add_argument("-o", "--outprefix", default="interpro_output", help="Prefix for output annotation files.")
     ip.set_defaults(func=run_interpro)
 
-    # Modified KAAS parser: updated help and positional argument naming for clarity.
     ka = subparsers.add_parser("kaas", help="Process a KAAS result file and generate a summary file. Usage: python eva_annotation.py kaas query.ko [outdir]")
     ka.add_argument("query", help="KAAS result file (e.g., query.ko)")
     ka.add_argument("outdir", nargs="?", default=".", help="Output directory (default: current directory)")
     ka.set_defaults(func=run_kaas)
 
     dn = subparsers.add_parser("diamond-nr", help="Evaluate Diamond BLASTP TSV output (NR database mode).")
-    dn.add_argument("-f", "--fasta", required=True, help="Path to the input protein FASTA file.")
+    dn.add_argument("-p", "--protein", required=True, help="Path to the input protein FASTA file.")
     dn.add_argument("-d", "--diamond_tsv", required=True, help="Path to the Diamond BLASTP TSV output file.")
     dn.add_argument("-o", "--outprefix", default="output", help="Prefix for output files (default: 'output').")
     dn.set_defaults(func=run_nr)
