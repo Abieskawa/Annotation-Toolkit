@@ -6,11 +6,12 @@ Combined GFF tool:
     * First, overlapping hits are reduced (with dropped ones logged).
     * Then, if --min-bit or --max-evalue are provided, hits with a bit score below
       the --min-bit threshold or an E-value above the --max-evalue threshold are dropped.
-      Dropped hits (with reasons) are logged if --save-filtered-hits is specified.
+      Dropped hits (with reasons) are logged if --save-filtered-hits is specified
+      (this option applies only in infernal mode).
   - For tRNA hits:
     * If --ignore-trna is provided, tRNA hits are dropped (this option applies only to Infernal input).
     * Otherwise, a parent gene feature and a child tRNA feature are created.
-  - For Braker3, gene features get gene_biotype=protein_coding.
+  - For Braker3, gene features get gene_biotype=protein_coding in the attribute column.
   
 Note:
   For Infernal output, we assume there is only one exon per hit.
@@ -69,10 +70,13 @@ def normalize_type(s):
     return re.sub(r"[.\-'/]", '', s.lower())
 
 def gen_uid(seq, typ, cnt, suf="", basename=None):
-    # If a basename is provided, prepend it (with underscore) and use a dot before the normalized type.
-    # For gene-level IDs, typ may already include an appended '_g'.
+    # If a basename is provided, check whether the seq already starts with it.
     if basename:
-        return f"{basename}_{seq}.{normalize_type(typ)}{cnt}{suf}"
+        if not seq.startswith(f"{basename}_"):
+            new_seq = f"{basename}_{seq}"
+        else:
+            new_seq = seq
+        return f"{new_seq}.{normalize_type(typ)}{cnt}{suf}"
     else:
         return f"{seq}_{normalize_type(typ)}{cnt}{suf}"
 
@@ -192,7 +196,7 @@ def convert_tblout_to_gff(lines, args):
     logging.info(f"Converted {len(accepted)} tblout lines to GFF. Dropped {len(dropped)} lines due to filtering.")
     return accepted, dropped
 
-# --- GFF Fixing (build hierarchical gene/child/exon structure) ---
+# --- GFF Fixing for Infernal and trnascan‑se ---
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
     # Log detailed CSV info to help the user understand what was loaded.
@@ -282,6 +286,37 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
     logging.info(f"Fixed GFF entries: {len(out)} lines.")
     return out
 
+# --- GFF Fixing for Braker3 ---
+def fix_braker3(lines, args):
+    logging.info("Processing Braker3 input: adding gene_biotype=protein_coding for gene features and removing empty lines.")
+    new_lines = []
+    for line in lines:
+        # Skip blank lines or lines with only whitespace.
+        if not line.strip():
+            continue
+        if line.startswith("#"):
+            new_lines.append(line.rstrip("\n"))
+            continue
+        parts = line.rstrip("\n").split('\t')
+        if len(parts) != 9:
+            new_lines.append(line.rstrip("\n"))
+            continue
+        seq, src, feat, start, end, score, strand, phase, attr = parts
+        if feat.lower() == "gene":
+            if attr == ".":
+                attr = "gene_biotype=protein_coding;"
+            else:
+                if "gene_biotype=" not in attr:
+                    if attr.endswith(";"):
+                        attr = attr + "gene_biotype=protein_coding;"
+                    else:
+                        attr = attr + ";gene_biotype=protein_coding;"
+        new_line = "\t".join([seq, src, feat, start, end, score, strand, phase, attr])
+        new_lines.append(new_line)
+    # Remove any possible empty lines
+    new_lines = [line for line in new_lines if line.strip() != ""]
+    return new_lines
+
 # --- Main Processing ---
 def process_fix(args):
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -313,13 +348,21 @@ def process_fix(args):
                 f.write(f"\nAccepted lines: {len(accepted)}\nDropped lines: {len(total_dropped)}\n")
             logging.info(f"Filtered tblout saved to {args.save_filtered_hits}")
         gff_lines = accepted
+    elif in_fmt == "braker3":
+        # For braker3, process with fix_braker3
+        gff_lines = fix_braker3(lines, args)
     else:
-        # For non-Infernal inputs (including trnascan-se and braker3), assume the file is already in GFF.
+        # For non-Infernal inputs (including trnascan-se), assume the file is already in GFF.
         gff_lines = lines
     logging.info(f"GFF lines count after conversion: {len(gff_lines)}")
     
     if args.step == "fix":
-        fixed = fix_gff_lines(gff_lines, args.csv, in_fmt, args) if in_fmt != "braker3" else gff_lines
+        if in_fmt == "braker3":
+            fixed = gff_lines
+        else:
+            fixed = fix_gff_lines(gff_lines, args.csv, in_fmt, args)
+        # Remove any stray empty lines.
+        fixed = [line for line in fixed if line.strip() != ""]
         logging.info(f"Fixed GFF contains {len(fixed)} lines.")
         if args.output:
             with open(args.output, 'w') as f:
@@ -345,7 +388,7 @@ def process_fix(args):
         else:
             print("\n".join(outl))
     elif args.step == "merge":
-        fixed = fix_gff_lines(gff_lines, args.csv, in_fmt, args) if in_fmt != "braker3" else gff_lines
+        fixed = gff_lines if in_fmt == "braker3" else fix_gff_lines(gff_lines, args.csv, in_fmt, args)
         if not any(l.startswith("##gff-version 3") for l in fixed):
             fixed.insert(0, "##gff-version 3")
         hdr = [l for l in fixed if l.startswith("#")]
@@ -368,7 +411,7 @@ def main():
         description="GFF tool: fixes GFF (with tblout filtering/conversion for infernal and trnascan-se), adds gene_biotype for Braker3, and sorts output. "
                     "Input is specified using -I FORMAT FILE. "
                     "For tblout (infernal) inputs, overlapping hits are first filtered then additional filtering based on --min-bit "
-                    "and/or --max-evalue is applied (dropped hits with reasons are logged if --save-filtered-hits is provided). "
+                    "and/or --max-evalue is applied (dropped hits with reasons are logged if --save-filtered-hits is provided [applies only in infernal mode]). "
                     "For tRNA hits, if --ignore-trna is set they are dropped (this applies only to Infernal input); otherwise, a parent gene and child tRNA feature are created."
     )
     subparsers = parser.add_subparsers(dest='command', required=True)
@@ -381,7 +424,7 @@ def main():
     fixp.add_argument("--step", choices=["fix", "sort", "merge"], default="merge",
                       help="Step: fix only, sort only, or full merge (fix then sort).")
     fixp.add_argument("--save-filtered-hits", type=str, default=None,
-                      help="File to save dropped tblout hits with reasons (due to --min-bit or --max-evalue filtering or --ignore-trna).")
+                      help="File to save dropped tblout hits with reasons (applies only in infernal mode).")
     fixp.add_argument("--min-bit", "-T", type=float, default=None, 
                       help="Minimum bit score threshold for tblout hits. Hits with a bit score below this threshold will be dropped after overlapping filtering. "
                            "Dropped hits (with reasons) are logged if --save-filtered-hits is specified.")
@@ -400,7 +443,7 @@ def main():
     fixp.add_argument("--source", type=str, default=None, help="Specify source field (tblout).")
     fixp.add_argument("--ignore-trna", action="store_true", help="Ignore (drop) tRNA hits (applies only to Infernal input).")
     fixp.add_argument("--basename", type=str, default=None,
-                      help="A basename to prepend to all generated IDs. For example, if provided as 'ABC', then gene IDs will be formatted as 'ABC_<scaffold>.<type>_g<counter>', e.g. ABC_chrom1.rrna_g2.")
+                      help="A basename to prepend to all generated IDs. For example, if provided as 'ABC', then gene IDs will be formatted as 'ABC_<scaffold>.<type>_g<counter>', e.g. ABC_chrom1.rrna_g2. If the input sequence already begins with the basename, the prefix is not added again.")
     args = parser.parse_args()
     if args.command == "fix":
         if args.I and args.I[0].lower() == "infernal":
