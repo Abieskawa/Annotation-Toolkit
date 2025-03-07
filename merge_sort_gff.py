@@ -8,11 +8,15 @@ Combined GFF tool:
       the --min-bit threshold or an E-value above the --max-evalue threshold are dropped.
       Dropped hits (with reasons) are logged if --save-filtered-hits is specified.
   - For tRNA hits:
-    * If --ignore-trna is provided, tRNA hits are dropped.
+    * If --ignore-trna is provided, tRNA hits are dropped (this option applies only to Infernal input).
     * Otherwise, a parent gene feature and a child tRNA feature are created.
   - For Braker3, gene features get gene_biotype=protein_coding.
+  
+Note:
+  For Infernal output, we assume there is only one exon per hit.
+  
 Default CSV: Rfam_15_0.csv
-Usage: -I FORMAT FILE (supported: infernal, trna-scan, braker3); --step {fix, sort, merge}
+Usage: -I FORMAT FILE (supported: infernal, trnascan-se, braker3); --step {fix, sort, merge}
 """
 
 import sys, argparse, csv, logging, re, os
@@ -28,7 +32,7 @@ def load_csv(fp):
         fp_in_script = os.path.join(script_dir, fp)
         if os.path.exists(fp_in_script):
             fp = fp_in_script
-    # Otherwise, if still not found, try current working directory.
+    # Otherwise, try the current working directory.
     if not os.path.exists(fp):
         fp_in_cwd = os.path.join(os.getcwd(), fp)
         if os.path.exists(fp_in_cwd):
@@ -61,12 +65,12 @@ def reconst_attrs(d):
     return '.' if not d else ';'.join(f"{k}={v}" for k,v in d.items()) + ';'
 
 def normalize_type(s):
-    # Remove dots, dashes, slashes, and apostrophes, but preserve underscores.
+    # Remove dots, dashes, slashes, and apostrophes but preserve underscores.
     return re.sub(r"[.\-'/]", '', s.lower())
 
 def gen_uid(seq, typ, cnt, suf="", basename=None):
-    # If a basename is provided, prepend it and use a dot separator before the normalized type.
-    # For gene-level IDs we assume typ already contains an appended '_g' if needed.
+    # If a basename is provided, prepend it (with underscore) and use a dot before the normalized type.
+    # For gene-level IDs, typ may already include an appended '_g'.
     if basename:
         return f"{basename}_{seq}.{normalize_type(typ)}{cnt}{suf}"
     else:
@@ -127,6 +131,11 @@ def filter_overlapping_hits(lines, args):
             filt.append(chosen)
     logging.info(f"Retained {len(filt)} hits after overlapping filtering.")
     logging.info(f"Dropped {len(dropped)} overlapping hits due to overlaps.")
+    if dropped:
+        for dline, reason in dropped:
+            logging.debug(f"Dropped hit: {dline.strip()}  # Reason: {reason}")
+    else:
+        logging.debug("No overlapping hits were dropped.")
     return [h["line"] for h in filt], dropped
 
 # --- Tblout conversion with filtering and logging dropped lines ---
@@ -161,7 +170,8 @@ def convert_tblout_to_gff(lines, args):
             s_from, s_to = fs[7], fs[8]
             strand, score, ev = fs[9], fs[14], fs[15]
             feature = fs[2] if args.cmscan else fs[2]
-        if args.ignore_trna and feature.lower() == "trna":
+        # For Infernal input, if --ignore-trna is set, drop tRNA hits.
+        if args.ignore_trna and args.I[0].lower() == "infernal" and feature.lower() == "trna":
             dropped.append((line, "Ignored tRNA hit due to --ignore-trna"))
             continue
         try:
@@ -185,7 +195,11 @@ def convert_tblout_to_gff(lines, args):
 # --- GFF Fixing (build hierarchical gene/child/exon structure) ---
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
-    logging.info(f"CSV loaded: {len(csvdata)} entries.")
+    # Log detailed CSV info to help the user understand what was loaded.
+    sample_keys = list(csvdata.keys())[:5]
+    logging.info(f"CSV file '{csv_fp}' loaded with {len(csvdata)} entries. Example entry IDs: {sample_keys}")
+    if in_fmt == "infernal":
+        logging.info("Assumption: Each Infernal hit is assumed to have only one exon.")
     out = []
     cnts, tcnts = defaultdict(int), defaultdict(int)
     for line in lines:
@@ -197,13 +211,13 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
             logging.warning(f"Malformed: {line}")
             continue
         seq, src, typ, start, end, score, strand, phase, attr = parts
-        # For Infernal: if the input format is infernal and the feature type exists in the CSV,
-        # build a gene/child/exon hierarchy.
+
+        # Case 1. Infernal input: build hierarchy using CSV info.
         if in_fmt == "infernal" and typ in csvdata:
             info = csvdata[typ]
             toks = [t.strip() for t in info['Type']]
             if any(t.lower() == "gene" for t in toks):
-                # For gene-level, add '_g' to the type so that IDs are like <basename>_<seq>.<normalized_type>_g<counter>
+                # Note: We assume there is only one exon per Infernal hit.
                 parent_tok = toks[0]
                 child_tok = toks[1] if len(toks) > 1 else toks[0]
                 cnts[(seq, child_tok.lower()+"_g")] += 1
@@ -211,13 +225,11 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                 pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
                 out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
                                        ("." if args.none else reconst_attrs(pattrs))]))
-
                 cnts[(seq, child_tok.lower())] += 1
                 cid = gen_uid(seq, child_tok, cnts[(seq, child_tok.lower())], basename=args.basename)
                 cattrs = {'ID': cid, 'Parent': gid}
                 out.append("\t".join([seq, src, child_tok, start, end, score, strand, phase,
                                        ("." if args.none else reconst_attrs(cattrs))]))
-                
                 exon_id = f"{cid}.exon1"
                 exon_attrs = {'ID': exon_id, 'Parent': cid}
                 out.append("\t".join([seq, src, "exon", start, end, score, strand, phase,
@@ -228,27 +240,42 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                 pattrs = {'ID': bid, 'description': info['Description']}
                 out.append("\t".join([seq, src, "biological_region", start, end, score, strand, phase,
                                        ("." if args.none else reconst_attrs(pattrs))]))
-        # Process tRNA hits: if type is tRNA.
+        # Case 2. trnascan-se input: process tRNAscan-SE hits (for types "trna" or "pseudogene")
+        elif in_fmt == "trnascan-se" and typ.lower() in ("trna", "pseudogene"):
+            tcnts[(seq, "child_tRNA")] += 1
+            child_num = tcnts[(seq, "child_tRNA")]
+            tcnts[(seq, "gene_tRNA")] += 1
+            gene_num = tcnts[(seq, "gene_tRNA")]
+            gid = gen_uid(seq, "trna_g", gene_num, basename=args.basename)
+            gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
+            out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
+                                   ("." if args.none else reconst_attrs(gattrs))]))
+            child_id = gen_uid(seq, "trna", child_num, basename=args.basename)
+            d = parse_attrs(remove_evalue(attr))
+            d['ID'] = child_id
+            d['Parent'] = gid
+            out.append("\t".join([seq, src, "trna", start, end, score, strand, phase,
+                                   ("." if args.none else reconst_attrs(d))]))
+        # Case 3. Fallback: for any feature with type "trna" (non‑trnascan‑se)
         elif typ.lower() == "trna":
-            if args.ignore_trna:
-                continue  # Skip tRNA hits if --ignore-trna is set.
-            else:
-                tcnts[(seq, "child_tRNA")] += 1
-                child_num = tcnts[(seq, "child_tRNA")]
-                tcnts[(seq, "gene_tRNA")] += 1
-                gene_num = tcnts[(seq, "gene_tRNA")]
-                gid = gen_uid(seq, "trna_g", gene_num, basename=args.basename)
-                gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
-                out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(gattrs))]))
-                child_id = gen_uid(seq, "trna", child_num, basename=args.basename)
-                d = parse_attrs(remove_evalue(attr))
-                d['ID'] = child_id
-                d['Parent'] = gid
-                out.append("\t".join([seq, src, typ, start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(d))]))
+            if in_fmt == "infernal" and args.ignore_trna:
+                continue
+            tcnts[(seq, "child_tRNA")] += 1
+            child_num = tcnts[(seq, "child_tRNA")]
+            tcnts[(seq, "gene_tRNA")] += 1
+            gene_num = tcnts[(seq, "gene_tRNA")]
+            gid = gen_uid(seq, "trna_g", gene_num, basename=args.basename)
+            gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
+            out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
+                                   ("." if args.none else reconst_attrs(gattrs))]))
+            child_id = gen_uid(seq, "trna", child_num, basename=args.basename)
+            d = parse_attrs(remove_evalue(attr))
+            d['ID'] = child_id
+            d['Parent'] = gid
+            out.append("\t".join([seq, src, typ, start, end, score, strand, phase,
+                                   ("." if args.none else reconst_attrs(d))]))
         else:
-            # For all other cases, remove the evalue from attributes unless --none is set.
+            # For all other cases, simply remove any evalue from the attributes (unless --none is set).
             out.append("\t".join(parts[:-1] + [("." if args.none else remove_evalue(attr) or ".")]))
     if not any(l.startswith("##gff-version 3") for l in out):
         out.insert(0, "##gff-version 3")
@@ -287,6 +314,7 @@ def process_fix(args):
             logging.info(f"Filtered tblout saved to {args.save_filtered_hits}")
         gff_lines = accepted
     else:
+        # For non-Infernal inputs (including trnascan-se and braker3), assume the file is already in GFF.
         gff_lines = lines
     logging.info(f"GFF lines count after conversion: {len(gff_lines)}")
     
@@ -337,16 +365,16 @@ def process_fix(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="GFF tool: fixes GFF (with tblout filtering/conversion for infernal), adds gene_biotype for Braker3, and sorts output. "
+        description="GFF tool: fixes GFF (with tblout filtering/conversion for infernal and trnascan-se), adds gene_biotype for Braker3, and sorts output. "
                     "Input is specified using -I FORMAT FILE. "
-                    "For tblout (infernal) inputs, overlapping hits are first filtered, then additional filtering based on --min-bit "
+                    "For tblout (infernal) inputs, overlapping hits are first filtered then additional filtering based on --min-bit "
                     "and/or --max-evalue is applied (dropped hits with reasons are logged if --save-filtered-hits is provided). "
-                    "For tRNA hits, if --ignore-trna is set they are dropped; otherwise, a parent gene and child tRNA feature are created."
+                    "For tRNA hits, if --ignore-trna is set they are dropped (this applies only to Infernal input); otherwise, a parent gene and child tRNA feature are created."
     )
     subparsers = parser.add_subparsers(dest='command', required=True)
     fixp = subparsers.add_parser('fix', help="Run processing; --step: fix, sort, or merge.")
     fixp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"),
-                      help="Input format and file. Supported: infernal, trna-scan, braker3.")
+                      help="Input format and file. Supported: infernal, trnascan-se, braker3.")
     fixp.add_argument("-c", "--csv", type=str, default="Rfam_15_0.csv", 
                       help="CSV file (default: Rfam_15_0.csv). If a relative path is provided, the file is searched for in the script's directory by default.")
     fixp.add_argument("-o", "--output", type=str, default=None, help="Output file (or stdout).")
@@ -370,7 +398,7 @@ def main():
     fixp.add_argument("--extra", type=str, default=None, help="Append extra info to attributes (tblout).")
     fixp.add_argument("--hidedesc", action="store_true", help="Do not prefix description with 'desc:' (tblout).")
     fixp.add_argument("--source", type=str, default=None, help="Specify source field (tblout).")
-    fixp.add_argument("--ignore-trna", action="store_true", help="Ignore (drop) tRNA hits.")
+    fixp.add_argument("--ignore-trna", action="store_true", help="Ignore (drop) tRNA hits (applies only to Infernal input).")
     fixp.add_argument("--basename", type=str, default=None,
                       help="A basename to prepend to all generated IDs. For example, if provided as 'ABC', then gene IDs will be formatted as 'ABC_<scaffold>.<type>_g<counter>', e.g. ABC_chrom1.rrna_g2.")
     args = parser.parse_args()
