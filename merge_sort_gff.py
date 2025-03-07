@@ -1,39 +1,28 @@
 #!/usr/bin/env python3
 """
 Combined GFF tool:
-  - Fixes Infernal/tRNAscan-SE GFF to create gene/child/exon hierarchies.
-  - For Infernal tblout input, filters overlapping hits then converts to GFF.
-    * First, overlapping hits are reduced (with dropped ones logged).
-    * Then, if --min-bit or --max-evalue are provided, hits with a bit score below
-      the --min-bit threshold or an E-value above the --max-evalue threshold are dropped.
-      Dropped hits (with reasons) are logged if --save-filtered-hits is specified
-      (this option applies only in infernal mode).
-  - For tRNA hits:
-    * If --ignore-trna is provided, tRNA hits are dropped (this option applies only to Infernal input).
-    * Otherwise, a parent gene feature and a child tRNA feature are created.
-  - For Braker3, gene features get gene_biotype=protein_coding in the attribute column.
-  
-Note:
-  For Infernal output, we assume there is only one exon per hit.
-  
-Default CSV: Rfam_15_0.csv
-Usage: -I FORMAT FILE (supported: infernal, trnascan-se, braker3); --step {fix, sort, merge}
+  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos) to create
+    gene/child/exon hierarchies and ensures only 9 columns with a single "##gff-version 3".
+  - "fix" mode: processes each file separately => <basename>_fix.gff.
+  - "all" mode: processes all files => for each file also writes an <basename>_allfix.gff,
+    then merges them into one merged_fix.gff.
 """
 
-import sys, argparse, csv, logging, re, os
+import sys
+import argparse
+import csv
+import logging
+import re
+import os
 from collections import defaultdict
 import pandas as pd
 
-# --- Utility functions ---
 def load_csv(fp):
-    # Get the directory where the script is stored.
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # If fp is not an absolute path, assume it is relative to the script's directory.
     if not os.path.isabs(fp):
         fp_in_script = os.path.join(script_dir, fp)
         if os.path.exists(fp_in_script):
             fp = fp_in_script
-    # Otherwise, try the current working directory.
     if not os.path.exists(fp):
         fp_in_cwd = os.path.join(os.getcwd(), fp)
         if os.path.exists(fp_in_cwd):
@@ -44,33 +33,43 @@ def load_csv(fp):
     with open(fp, 'r', newline='') as f:
         for row in csv.DictReader(f):
             key = row['ID'].strip()
-            d[key] = {'Accession': row['Accession'].strip(),
-                      'Type': [t.strip() for t in row['Type'].split(';')],
-                      'Description': row['Description'].strip()}
+            d[key] = {
+                'Accession': row['Accession'].strip(),
+                'Type': [t.strip() for t in row['Type'].split(';')],
+                'Description': row['Description'].strip()
+            }
     return d
 
 def remove_evalue(s):
-    return ';'.join(p.strip() for p in s.split(';') if not p.lower().startswith('evalue=')) if s and s!='.' else ''
+    if not s or s == '.':
+        return ''
+    parts = []
+    for p in s.split(';'):
+        p = p.strip()
+        if not p.lower().startswith('evalue='):
+            parts.append(p)
+    return ';'.join(parts)
 
 def parse_attrs(a):
     d = {}
-    if not a or a=='.': 
+    if not a or a == '.':
         return d
     for p in a.split(';'):
+        p = p.strip()
         if '=' in p:
             k, v = p.split('=', 1)
             d[k.strip()] = v.strip()
     return d
 
 def reconst_attrs(d):
-    return '.' if not d else ';'.join(f"{k}={v}" for k,v in d.items()) + ';'
+    if not d:
+        return '.'
+    return ';'.join(f"{k}={v}" for k, v in d.items()) + ';'
 
 def normalize_type(s):
-    # Remove dots, dashes, slashes, and apostrophes but preserve underscores.
     return re.sub(r"[.\-'/]", '', s.lower())
 
 def gen_uid(seq, typ, cnt, suf="", basename=None):
-    # If a basename is provided, check whether the seq already starts with it.
     if basename:
         if not seq.startswith(f"{basename}_"):
             new_seq = f"{basename}_{seq}"
@@ -80,9 +79,53 @@ def gen_uid(seq, typ, cnt, suf="", basename=None):
     else:
         return f"{seq}_{normalize_type(typ)}{cnt}{suf}"
 
-# --- Overlap filtering for Infernal tblout ---
+# ---------------- Mitos-specific ----------------
+
+def fix_mitos_lines(lines, args):
+    fixed = []
+    for line in lines:
+        line = line.rstrip("\n")
+        if line.startswith("#"):
+            fixed.append(line)
+            continue
+        parts = line.split('\t')
+        if len(parts) != 9:
+            fixed.append(line)
+            continue
+        
+        # Replace "ncRNA_gene" with "gene"
+        if parts[2] == "ncRNA_gene":
+            parts[2] = "gene"
+        
+        # remove parentheses from attributes
+        parts[8] = fix_mitos_attr_field(parts[8], parts[0], args)
+        fixed.append("\t".join(parts))
+    return fixed
+
+def fix_mitos_attr_field(attr, seq, args):
+    attr = re.sub(r"\(.*?\)", "", attr).strip()
+    new_attrs = []
+    for chunk in attr.split(';'):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '=' in chunk:
+            key, value = chunk.split('=', 1)
+            if key in ("ID", "Parent", "gene_id", "Name"):
+                if not value.startswith(f"{seq}."):
+                    value = f"{seq}.{value}"
+            new_attrs.append(f"{key}={value}")
+        else:
+            new_attrs.append(chunk)
+    out = ';'.join(new_attrs)
+    if out and not out.endswith(';'):
+        out += ';'
+    return out
+
+# ---------------- Infernal Overlap Filtering ----------------
+
 def filter_overlapping_hits(lines, args):
-    logging.info("Filtering overlapping hits...")
+    logging.info("Filtering overlapping Infernal hits...")
     hits = []
     for line in lines:
         if line.startswith("#"):
@@ -98,18 +141,27 @@ def filter_overlapping_hits(lines, args):
                 s, e = int(fs[7]), int(fs[8])
                 strand, bit, ev = fs[9], float(fs[14]), float(fs[15])
         except Exception as ex:
-            logging.error(f"Parse error: {line} - {ex}")
+            logging.error(f"Parse error: {line} => {ex}")
             continue
         start, end = (s, e) if strand == "+" else (e, s)
-        hits.append({"query": query, "strand": strand, "start": start, "end": end,
-                     "evalue": ev, "bit": bit, "line": line})
+        hits.append({
+            "query": query,
+            "strand": strand,
+            "start": start,
+            "end": end,
+            "bit": bit,
+            "evalue": ev,
+            "line": line
+        })
+    from collections import defaultdict
     groups = defaultdict(list)
     for h in hits:
         groups[(h["query"], h["strand"])].append(h)
+    
     filt = []
     dropped = []
-    for key, hs in groups.items():
-        hs.sort(key=lambda h: h["start"])
+    for (key, hs) in groups.items():
+        hs.sort(key=lambda x: x["start"])
         cluster = []
         cur_end = None
         for h in hs:
@@ -120,31 +172,31 @@ def filter_overlapping_hits(lines, args):
                 cluster.append(h)
                 cur_end = max(cur_end, h["end"])
             else:
-                chosen = min(cluster, key=lambda h: (h["evalue"], -h["bit"]))
+                chosen = min(cluster, key=lambda x: (x["evalue"], -x["bit"]))
                 for h_drop in cluster:
                     if h_drop is not chosen:
-                        dropped.append((h_drop["line"], f"Overlaps with higher scoring hit selected: {chosen['line'].strip()}"))
+                        dropped.append(
+                            (h_drop["line"], f"Overlap with better-scoring: {chosen['line'].strip()}")
+                        )
                 filt.append(chosen)
                 cluster = [h]
                 cur_end = h["end"]
         if cluster:
-            chosen = min(cluster, key=lambda h: (h["evalue"], -h["bit"]))
+            chosen = min(cluster, key=lambda x: (x["evalue"], -x["bit"]))
             for h_drop in cluster:
                 if h_drop is not chosen:
-                    dropped.append((h_drop["line"], f"Overlaps with higher scoring hit selected: {chosen['line'].strip()}"))
+                    dropped.append(
+                        (h_drop["line"], f"Overlap with better-scoring: {chosen['line'].strip()}")
+                    )
             filt.append(chosen)
-    logging.info(f"Retained {len(filt)} hits after overlapping filtering.")
-    logging.info(f"Dropped {len(dropped)} overlapping hits due to overlaps.")
-    if dropped:
-        for dline, reason in dropped:
-            logging.debug(f"Dropped hit: {dline.strip()}  # Reason: {reason}")
-    else:
-        logging.debug("No overlapping hits were dropped.")
+    
+    logging.info(f"Retained {len(filt)} hits after overlap filtering, dropped {len(dropped)}.")
     return [h["line"] for h in filt], dropped
 
-# --- Tblout conversion with filtering and logging dropped lines ---
+# ---------------- Infernal Tblout → GFF ----------------
+
 def convert_tblout_to_gff(lines, args):
-    logging.info("Converting tblout to GFF...")
+    logging.info("Converting Infernal tblout to GFF...")
     accepted = []
     dropped = []
     src = "cmscan" if args.cmscan else "cmsearch"
@@ -152,14 +204,14 @@ def convert_tblout_to_gff(lines, args):
         src += "-" + args.version
     if args.source:
         src = args.source
+    
     for line in lines:
         if line.startswith("#"):
             continue
         fs = line.rstrip("\n").split()
         if args.fmt2:
             if len(fs) < 27:
-                logging.error(f"Insufficient fields: {line}")
-                dropped.append((line, "Insufficient fields (expected >=27 for --fmt2)"))
+                dropped.append((line, "Insufficient fields (>=27 needed for --fmt2)"))
                 continue
             seq = fs[3] if args.cmscan else fs[1]
             s_from, s_to = fs[9], fs[10]
@@ -167,43 +219,73 @@ def convert_tblout_to_gff(lines, args):
             feature = fs[1] if args.cmscan else fs[2]
         else:
             if len(fs) < 18:
-                logging.error(f"Insufficient fields: {line}")
-                dropped.append((line, "Insufficient fields (expected >=18)"))
+                dropped.append((line, "Insufficient fields (>=18 needed)"))
                 continue
             seq = fs[2] if args.cmscan else fs[0]
             s_from, s_to = fs[7], fs[8]
             strand, score, ev = fs[9], fs[14], fs[15]
             feature = fs[2] if args.cmscan else fs[2]
-        # For Infernal input, if --ignore-trna is set, drop tRNA hits.
-        if args.ignore_trna and args.I[0].lower() == "infernal" and feature.lower() == "trna":
-            dropped.append((line, "Ignored tRNA hit due to --ignore-trna"))
+        
+        if args.ignore_trna and feature.lower() == "trna":
+            dropped.append((line, "Ignored tRNA (due to --ignore-trna)"))
             continue
+        
         try:
             s, e = (int(s_from), int(s_to)) if strand == "+" else (int(s_to), int(s_from))
             score_f = f"{float(score):.1f}"
         except Exception as ex:
-            logging.error(f"Conversion error: {line} - {ex}")
-            dropped.append((line, f"Conversion error: {ex}"))
+            dropped.append((line, f"coord parse error: {ex}"))
             continue
+        
         if args.min_bit is not None and float(score) < args.min_bit:
-            dropped.append((line, f"Bit score {score} below threshold {args.min_bit}"))
+            dropped.append((line, f"Bit score {score} < threshold {args.min_bit}"))
             continue
         if args.max_evalue is not None and float(ev) > args.max_evalue:
-            dropped.append((line, f"E-value {ev} above threshold {args.max_evalue}"))
+            dropped.append((line, f"E-value {ev} > threshold {args.max_evalue}"))
             continue
+        
         attr_field = "." if args.none else f"evalue={ev}"
-        accepted.append("\t".join([seq, src, feature, str(s), str(e), score_f, strand, ".", attr_field]))
-    logging.info(f"Converted {len(accepted)} tblout lines to GFF. Dropped {len(dropped)} lines due to filtering.")
+        
+        accepted.append("\t".join([
+            seq, src, feature, str(s), str(e), score_f, strand, ".", attr_field
+        ]))
+    
+    logging.info(f"Converted {len(accepted)} lines to GFF; dropped {len(dropped)}.")
     return accepted, dropped
 
-# --- GFF Fixing for Infernal and trnascan‑se ---
+# ---------------- Braker3 fix ----------------
+
+def fix_braker3(lines, args):
+    logging.info("Fixing Braker3 lines: add gene_biotype=protein_coding to gene feats.")
+    new_lines = []
+    for line in lines:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        if line.startswith("#"):
+            new_lines.append(line)
+            continue
+        parts = line.split('\t')
+        if len(parts) != 9:
+            new_lines.append(line)
+            continue
+        seq, src, feat, start, end, score, strand, phase, attr = parts
+        if feat.lower() == "gene":
+            if attr == ".":
+                attr = "gene_biotype=protein_coding;"
+            elif "gene_biotype=" not in attr:
+                if not attr.endswith(";"):
+                    attr += ";"
+                attr += "gene_biotype=protein_coding;"
+        new_lines.append("\t".join([seq, src, feat, start, end, score, strand, phase, attr]))
+    return new_lines
+
+# ---------------- GFF fix for infernal / tRNAscan-se ----------------
+
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
-    # Log detailed CSV info to help the user understand what was loaded.
-    sample_keys = list(csvdata.keys())[:5]
-    logging.info(f"CSV file '{csv_fp}' loaded with {len(csvdata)} entries. Example entry IDs: {sample_keys}")
-    if in_fmt == "infernal":
-        logging.info("Assumption: Each Infernal hit is assumed to have only one exon.")
+    logging.info(f"Loaded CSV with {len(csvdata)} rows.")
+    
     out = []
     cnts, tcnts = defaultdict(int), defaultdict(int)
     for line in lines:
@@ -212,248 +294,376 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
             continue
         parts = line.rstrip("\n").split('\t')
         if len(parts) != 9:
-            logging.warning(f"Malformed: {line}")
+            out.append(line.rstrip("\n"))
             continue
+        
         seq, src, typ, start, end, score, strand, phase, attr = parts
-
-        # Case 1. Infernal input: build hierarchy using CSV info.
-        if in_fmt == "infernal" and typ in csvdata:
-            info = csvdata[typ]
-            toks = [t.strip() for t in info['Type']]
-            if any(t.lower() == "gene" for t in toks):
-                # Note: We assume there is only one exon per Infernal hit.
-                parent_tok = toks[0]
-                child_tok = toks[1] if len(toks) > 1 else toks[0]
-                cnts[(seq, child_tok.lower()+"_g")] += 1
-                gid = gen_uid(seq, child_tok + "_g", cnts[(seq, child_tok.lower()+"_g")], basename=args.basename)
-                pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
-                out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(pattrs))]))
-                cnts[(seq, child_tok.lower())] += 1
-                cid = gen_uid(seq, child_tok, cnts[(seq, child_tok.lower())], basename=args.basename)
-                cattrs = {'ID': cid, 'Parent': gid}
-                out.append("\t".join([seq, src, child_tok, start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(cattrs))]))
-                exon_id = f"{cid}.exon1"
-                exon_attrs = {'ID': exon_id, 'Parent': cid}
-                out.append("\t".join([seq, src, "exon", start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(exon_attrs))]))
+        
+        if in_fmt == "infernal":
+            # if 'typ' in csv => treat as Rfam
+            if typ in csvdata:
+                info = csvdata[typ]
+                toks = info['Type']
+                if any(x.lower() == "gene" for x in toks):
+                    child_tok = toks[1] if len(toks) > 1 else toks[0]
+                    cnts[(seq, child_tok.lower()+"_g")] += 1
+                    gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")], basename=args.basename)
+                    pattrs = {
+                        'ID': gid,
+                        'gene_biotype': child_tok,
+                        'description': info['Description']
+                    }
+                    out.append("\t".join([
+                        seq, src, "gene", start, end, score, strand, phase,
+                        "." if args.none else reconst_attrs(pattrs)
+                    ]))
+                    
+                    cnts[(seq, child_tok.lower())] += 1
+                    cid = gen_uid(seq, child_tok, cnts[(seq, child_tok.lower())], basename=args.basename)
+                    cattrs = {'ID': cid, 'Parent': gid}
+                    out.append("\t".join([
+                        seq, src, child_tok, start, end, score, strand, phase,
+                        "." if args.none else reconst_attrs(cattrs)
+                    ]))
+                    
+                    exon_id = f"{cid}.exon1"
+                    exon_attrs = {'ID': exon_id, 'Parent': cid}
+                    out.append("\t".join([
+                        seq, src, "exon", start, end, score, strand, phase,
+                        "." if args.none else reconst_attrs(exon_attrs)
+                    ]))
+                else:
+                    # treat as "biological_region"
+                    cnts[(seq, "bio_reg")] += 1
+                    bid = gen_uid(seq, "biological_region", cnts[(seq, "bio_reg")], basename=args.basename)
+                    battrs = {
+                        'ID': bid,
+                        'description': info['Description']
+                    }
+                    out.append("\t".join([
+                        seq, src, "biological_region", start, end, score, strand, phase,
+                        "." if args.none else reconst_attrs(battrs)
+                    ]))
             else:
-                cnts[(seq, "bio_reg")] += 1
-                bid = gen_uid(seq, "biological_region", cnts[(seq, "bio_reg")], basename=args.basename)
-                pattrs = {'ID': bid, 'description': info['Description']}
-                out.append("\t".join([seq, src, "biological_region", start, end, score, strand, phase,
-                                       ("." if args.none else reconst_attrs(pattrs))]))
-        # Case 2. trnascan-se input: process tRNAscan-SE hits (for types "trna" or "pseudogene")
-        elif in_fmt == "trnascan-se" and typ.lower() in ("trna", "pseudogene"):
-            tcnts[(seq, "child_tRNA")] += 1
-            child_num = tcnts[(seq, "child_tRNA")]
-            tcnts[(seq, "gene_tRNA")] += 1
-            gene_num = tcnts[(seq, "gene_tRNA")]
-            gid = gen_uid(seq, "trna_g", gene_num, basename=args.basename)
-            gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
-            out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
-                                   ("." if args.none else reconst_attrs(gattrs))]))
-            child_id = gen_uid(seq, "trna", child_num, basename=args.basename)
-            d = parse_attrs(remove_evalue(attr))
-            d['ID'] = child_id
-            d['Parent'] = gid
-            out.append("\t".join([seq, src, "trna", start, end, score, strand, phase,
-                                   ("." if args.none else reconst_attrs(d))]))
-        # Case 3. Fallback: for any feature with type "trna" (non‑trnascan‑se)
-        elif typ.lower() == "trna":
-            if in_fmt == "infernal" and args.ignore_trna:
-                continue
-            tcnts[(seq, "child_tRNA")] += 1
-            child_num = tcnts[(seq, "child_tRNA")]
-            tcnts[(seq, "gene_tRNA")] += 1
-            gene_num = tcnts[(seq, "gene_tRNA")]
-            gid = gen_uid(seq, "trna_g", gene_num, basename=args.basename)
-            gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
-            out.append("\t".join([seq, src, "gene", start, end, score, strand, phase,
-                                   ("." if args.none else reconst_attrs(gattrs))]))
-            child_id = gen_uid(seq, "trna", child_num, basename=args.basename)
-            d = parse_attrs(remove_evalue(attr))
-            d['ID'] = child_id
-            d['Parent'] = gid
-            out.append("\t".join([seq, src, typ, start, end, score, strand, phase,
-                                   ("." if args.none else reconst_attrs(d))]))
+                # not in CSV => keep, remove evalue
+                out.append("\t".join(parts[:8] + [
+                    "." if args.none else remove_evalue(attr) or "."
+                ]))
+        
+        elif in_fmt == "trnascan-se":
+            if typ.lower() in ("trna", "pseudogene"):
+                tcnts[(seq, "gene_tRNA")] += 1
+                gnum = tcnts[(seq, "gene_tRNA")]
+                gid = gen_uid(seq, "trna_g", gnum, basename=args.basename)
+                gattrs = {'ID': gid, 'gene_biotype': "tRNA"}
+                out.append("\t".join([
+                    seq, src, "gene", start, end, score, strand, phase,
+                    "." if args.none else reconst_attrs(gattrs)
+                ]))
+                
+                tcnts[(seq, "child_tRNA")] += 1
+                cnum = tcnts[(seq, "child_tRNA")]
+                cid = gen_uid(seq, "trna", cnum, basename=args.basename)
+                d = parse_attrs(remove_evalue(attr))
+                d['ID'] = cid
+                d['Parent'] = gid
+                out.append("\t".join([
+                    seq, src, "tRNA", start, end, score, strand, phase,
+                    "." if args.none else reconst_attrs(d)
+                ]))
+            else:
+                out.append("\t".join(parts[:8] + [
+                    "." if args.none else remove_evalue(attr) or "."
+                ]))
         else:
-            # For all other cases, simply remove any evalue from the attributes (unless --none is set).
-            out.append("\t".join(parts[:-1] + [("." if args.none else remove_evalue(attr) or ".")]))
-    if not any(l.startswith("##gff-version 3") for l in out):
-        out.insert(0, "##gff-version 3")
-    logging.info(f"Fixed GFF entries: {len(out)} lines.")
-    return out
-
-# --- GFF Fixing for Braker3 ---
-def fix_braker3(lines, args):
-    logging.info("Processing Braker3 input: adding gene_biotype=protein_coding for gene features and removing empty lines.")
-    new_lines = []
-    for line in lines:
-        # Skip blank lines or lines with only whitespace.
-        if not line.strip():
+            out.append("\t".join(parts[:8] + [
+                "." if args.none else remove_evalue(attr) or "."
+            ]))
+    # single version line at top
+    final = []
+    version_found = False
+    for l in out:
+        if l.startswith("##gff-version"):
             continue
-        if line.startswith("#"):
-            new_lines.append(line.rstrip("\n"))
-            continue
-        parts = line.rstrip("\n").split('\t')
-        if len(parts) != 9:
-            new_lines.append(line.rstrip("\n"))
-            continue
-        seq, src, feat, start, end, score, strand, phase, attr = parts
-        if feat.lower() == "gene":
-            if attr == ".":
-                attr = "gene_biotype=protein_coding;"
-            else:
-                if "gene_biotype=" not in attr:
-                    if attr.endswith(";"):
-                        attr = attr + "gene_biotype=protein_coding;"
-                    else:
-                        attr = attr + ";gene_biotype=protein_coding;"
-        new_line = "\t".join([seq, src, feat, start, end, score, strand, phase, attr])
-        new_lines.append(new_line)
-    # Remove any possible empty lines
-    new_lines = [line for line in new_lines if line.strip() != ""]
-    return new_lines
+        final.append(l)
+    final.insert(0, "##gff-version 3")
+    return final
 
-# --- Main Processing ---
-def process_fix(args):
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-    if args.I:
-        fmt = args.I[0].lower()
-        with open(args.I[1], 'r') as f:
-            lines = f.readlines()
-        total_input_lines = len(lines)
-        in_fmt = fmt
-        logging.info(f"Input format: {fmt} | {total_input_lines} lines read.")
-    else:
-        lines = sys.stdin.readlines()
-        total_input_lines = len(lines)
-        in_fmt = "gff"
-        logging.info(f"STDIN read: {total_input_lines} lines; assuming GFF format.")
-
-    if in_fmt == "infernal":
-        filtered_lines, overlapped_dropped = filter_overlapping_hits(lines, args)
-        logging.info(f"After overlapping filtering: {len(filtered_lines)} lines remain (from original {total_input_lines}).")
-        accepted, conv_dropped = convert_tblout_to_gff(filtered_lines, args)
-        total_dropped = overlapped_dropped + conv_dropped
-        logging.info(f"After score filtering: {len(accepted)} lines accepted; {len(total_dropped)} lines dropped.")
-        if args.save_filtered_hits:
-            with open(args.save_filtered_hits, 'w') as f:
-                f.write(f"Total input lines: {total_input_lines}\n")
-                f.write(f"Lines after overlapping filtering: {len(filtered_lines)}\n")
-                for ln, reason in total_dropped:
-                    f.write(f"{ln.rstrip()}  # Dropped: {reason}\n")
-                f.write(f"\nAccepted lines: {len(accepted)}\nDropped lines: {len(total_dropped)}\n")
-            logging.info(f"Filtered tblout saved to {args.save_filtered_hits}")
-        gff_lines = accepted
+def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
+    if in_fmt == "mitos":
+        return fix_mitos_lines(lines, args)
     elif in_fmt == "braker3":
-        # For braker3, process with fix_braker3
-        gff_lines = fix_braker3(lines, args)
+        return fix_braker3(lines, args)
+    elif in_fmt in ("infernal", "trnascan-se"):
+        return fix_gff_lines(lines, csv_fp, in_fmt, args)
     else:
-        # For non-Infernal inputs (including trnascan-se), assume the file is already in GFF.
-        gff_lines = lines
-    logging.info(f"GFF lines count after conversion: {len(gff_lines)}")
+        return lines
+
+# ---------------- Cleanup: ensure 9 columns & single version line ----------------
+
+def cleanup_for_fix(lines):
+    out = []
+    version_found = False
+    for line in lines:
+        if line.startswith("##gff-version"):
+            if not version_found:
+                out.append("##gff-version 3")
+                version_found = True
+            # skip additional version lines
+            continue
+        out.append(line)
     
-    if args.step == "fix":
-        if in_fmt == "braker3":
-            fixed = gff_lines
+    final = []
+    for line in out:
+        if line.startswith("#"):
+            final.append(line)
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 9:
+            # discard columns beyond the 9th
+            final.append("\t".join(parts[:9]))
         else:
-            fixed = fix_gff_lines(gff_lines, args.csv, in_fmt, args)
-        # Remove any stray empty lines.
-        fixed = [line for line in fixed if line.strip() != ""]
-        logging.info(f"Fixed GFF contains {len(fixed)} lines.")
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write("\n".join(fixed))
+            # if < 9, keep as is
+            final.append(line)
+    return final
+
+# ---------------- Sorting & Merging for "all" ----------------
+
+def sort_merge_gff_lines(lines):
+    headers = []
+    data = []
+    for l in lines:
+        if l.startswith("#"):
+            if l.startswith("##gff-version"):
+                continue
+            headers.append(l)
         else:
-            print("\n".join(fixed))
-    elif args.step == "sort":
-        fixed = gff_lines
-        if not any(l.startswith("##gff-version 3") for l in fixed):
-            fixed.insert(0, "##gff-version 3")
-        hdr = [l for l in fixed if l.startswith("#")]
-        data = [l for l in fixed if not l.startswith("#")]
-        rows = [l.split('\t') for l in data if len(l.split('\t')) == 9]
-        df = pd.DataFrame(rows, columns=['scaffold','source','feature','start','end','score','strand','phase','attributes'])
-        df['start'] = pd.to_numeric(df['start'])
-        df['hierarchy'] = df['attributes'].apply(lambda a: 1 if "Parent=" in a else 0)
-        sorted_df = df.sort_values(by=['scaffold','start','hierarchy'])
-        outl = hdr + ["\t".join(map(str, row)) for row in sorted_df.values]
-        logging.info(f"Sorted GFF contains {len(outl)} lines.")
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write("\n".join(outl))
+            data.append(l)
+    
+    rows = []
+    for l in data:
+        parts = l.split("\t")
+        if len(parts) < 9:
+            continue
+        parts = parts[:9]
+        rows.append(parts)
+    
+    if not rows:
+        return ["##gff-version 3"] + headers
+    
+    df = pd.DataFrame(rows, columns=[
+        'scaffold','source','feature','start','end','score','strand','phase','attributes'
+    ])
+    df['start'] = pd.to_numeric(df['start'], errors='coerce')
+    df = df.dropna(subset=['start'])
+    df['hierarchy'] = df['attributes'].apply(lambda x: 1 if 'Parent=' in x else 0)
+    df = df.sort_values(by=['scaffold','start','hierarchy'])
+    df = df[['scaffold','source','feature','start','end','score','strand','phase','attributes']]
+    merged = ["\t".join(map(str, row)) for row in df.values]
+    
+    # single version line + unique comments
+    unique_hdr = []
+    for h in headers:
+        if h not in unique_hdr:
+            unique_hdr.append(h)
+    final = ["##gff-version 3"] + unique_hdr + merged
+    return final
+
+# ---------------- Single-file processing ----------------
+
+def process_file(fmt, fname, args):
+    with open(fname, 'r') as f:
+        lines = f.readlines()
+    logging.info(f"Processing file: {fname}, format={fmt}, {len(lines)} lines.")
+    
+    dropped = []
+    fmt_lower = fmt.lower()
+    if fmt_lower == "infernal":
+        filtered, drops1 = filter_overlapping_hits(lines, args)
+        converted, drops2 = convert_tblout_to_gff(filtered, args)
+        lines = converted
+        dropped = drops1 + drops2
+    elif fmt_lower == "braker3":
+        pass
+    elif fmt_lower == "mitos":
+        pass
+    elif fmt_lower == "trnascan-se":
+        pass
+    
+    fixed = fix_gff_lines_main(lines, args.csv, fmt_lower, args)
+    return fixed, dropped
+
+# ---------------- fix mode ----------------
+
+def process_fix_cmd(args):
+    outputs = {}
+    drop_logs = {}
+    for (fmt, fname) in args.I:
+        gff_lines, dropped = process_file(fmt, fname, args)
+        cleaned = cleanup_for_fix(gff_lines)
+        outputs[fname] = cleaned
+        drop_logs[fname] = dropped
+    return outputs, drop_logs
+
+# ---------------- all mode ----------------
+
+def process_all(args):
+    """
+    In 'all' mode:
+     - We fix each file, save an intermediate <root>_allfix.gff for the user
+     - Also gather all lines into a list to produce merged_fix.gff
+    """
+    all_data = []
+    all_drops = {}
+    
+    for (fmt, fname) in args.I:
+        gff_lines, dropped = process_file(fmt, fname, args)
+        cleaned = cleanup_for_fix(gff_lines)
+        
+        # Write the intermediate file for user inspection
+        base = os.path.basename(fname)
+        root, _ = os.path.splitext(base)
+        out_fname = os.path.join(args.outdir, f"{root}_allfix.gff")
+        with open(out_fname, 'w') as outf:
+            outf.write("\n".join(cleaned) + "\n")
+        logging.info(f"Wrote intermediate all-fix: {out_fname}")
+        
+        all_data.extend(cleaned)
+        all_drops[fname] = dropped
+    
+    # Separate Mitos vs non-Mitos
+    non_mitos, mitos = [], []
+    for line in all_data:
+        cols = line.strip().split("\t")
+        if len(cols) < 2:
+            non_mitos.append(line)
+            continue
+        if cols[1].lower() == "mitos":
+            mitos.append(line)
         else:
-            print("\n".join(outl))
-    elif args.step == "merge":
-        fixed = gff_lines if in_fmt == "braker3" else fix_gff_lines(gff_lines, args.csv, in_fmt, args)
-        if not any(l.startswith("##gff-version 3") for l in fixed):
-            fixed.insert(0, "##gff-version 3")
-        hdr = [l for l in fixed if l.startswith("#")]
-        data = [l for l in fixed if not l.startswith("#")]
-        rows = [l.split('\t') for l in data if len(l.split('\t')) == 9]
-        df = pd.DataFrame(rows, columns=['scaffold','source','feature','start','end','score','strand','phase','attributes'])
-        df['start'] = pd.to_numeric(df['start'])
-        df['hierarchy'] = df['attributes'].apply(lambda a: 1 if "Parent=" in a else 0)
-        sorted_df = df.sort_values(by=['scaffold','start','hierarchy'])
-        merged = hdr + ["\t".join(map(str, row)) for row in sorted_df.values]
-        logging.info(f"Merged GFF contains {len(merged)} lines.")
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write("\n".join(merged))
-        else:
-            print("\n".join(merged))
+            non_mitos.append(line)
+    
+    merged_non_mitos = sort_merge_gff_lines(non_mitos)
+    # remove leading version lines from mitos
+    mitos_clean = [m for m in mitos if not m.startswith("##gff-version")]
+    merged = merged_non_mitos + mitos_clean
+    return merged, all_drops
+
+# ---------------- main ----------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="GFF tool: fixes GFF (with tblout filtering/conversion for infernal and trnascan-se), adds gene_biotype for Braker3, and sorts output. "
-                    "Input is specified using -I FORMAT FILE. "
-                    "For tblout (infernal) inputs, overlapping hits are first filtered then additional filtering based on --min-bit "
-                    "and/or --max-evalue is applied (dropped hits with reasons are logged if --save-filtered-hits is provided [applies only in infernal mode]). "
-                    "For tRNA hits, if --ignore-trna is set they are dropped (this applies only to Infernal input); otherwise, a parent gene and child tRNA feature are created."
+        description="GFF combine & fix tool. In 'all' mode, also produce intermediate _allfix.gff files."
     )
-    subparsers = parser.add_subparsers(dest='command', required=True)
-    fixp = subparsers.add_parser('fix', help="Run processing; --step: fix, sort, or merge.")
-    fixp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"),
-                      help="Input format and file. Supported: infernal, trnascan-se, braker3.")
-    fixp.add_argument("-c", "--csv", type=str, default="Rfam_15_0.csv", 
-                      help="CSV file (default: Rfam_15_0.csv). If a relative path is provided, the file is searched for in the script's directory by default.")
-    fixp.add_argument("-o", "--output", type=str, default=None, help="Output file (or stdout).")
-    fixp.add_argument("--step", choices=["fix", "sort", "merge"], default="merge",
-                      help="Step: fix only, sort only, or full merge (fix then sort).")
+    sub = parser.add_subparsers(dest='command', required=True)
+    
+    fixp = sub.add_parser('fix', help="Process each file separately => <root>_fix.gff.")
+    fixp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
+                      help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
+    fixp.add_argument("--csv", type=str, default="Rfam_15_0.csv",
+                      help="CSV for lookup (default=Rfam_15_0.csv).")
+    fixp.add_argument("--outdir", type=str, required=True,
+                      help="Output directory for separate <root>_fix.gff.")
     fixp.add_argument("--save-filtered-hits", type=str, default=None,
-                      help="File to save dropped tblout hits with reasons (applies only in infernal mode).")
-    fixp.add_argument("--min-bit", "-T", type=float, default=None, 
-                      help="Minimum bit score threshold for tblout hits. Hits with a bit score below this threshold will be dropped after overlapping filtering. "
-                           "Dropped hits (with reasons) are logged if --save-filtered-hits is specified.")
-    fixp.add_argument("--max-evalue", "-E", type=float, default=None, 
-                      help="Maximum E-value threshold for tblout hits. Hits with an E-value above this threshold will be dropped after overlapping filtering. "
-                           "Dropped hits (with reasons) are logged if --save-filtered-hits is specified.")
-    fixp.add_argument("--cmscan", action="store_true", help="Tblout from cmscan.")
-    fixp.add_argument("--fmt2", action="store_true", help="Tblout with --fmt2 (27+ fields).")
+                      help="Prefix for dropped-hits log (infernal only).")
+    fixp.add_argument("--min-bit", "-T", type=float, default=None,
+                      help="Min bit score for infernal.")
+    fixp.add_argument("--max-evalue", "-E", type=float, default=None,
+                      help="Max evalue for infernal.")
+    fixp.add_argument("--cmscan", action="store_true", help="Infernal input from cmscan tblout.")
+    fixp.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
     grp = fixp.add_mutually_exclusive_group()
-    grp.add_argument("--all", action="store_true", help="Output all attributes (tblout).")
-    grp.add_argument("--none", action="store_true", help="Output no attributes (tblout): attribute field will be '.'")
-    grp.add_argument("--desc", action="store_true", help="Output description instead of E-value (tblout).")
-    fixp.add_argument("--version", type=str, default=None, help="Append version to source (tblout).")
-    fixp.add_argument("--extra", type=str, default=None, help="Append extra info to attributes (tblout).")
-    fixp.add_argument("--hidedesc", action="store_true", help="Do not prefix description with 'desc:' (tblout).")
-    fixp.add_argument("--source", type=str, default=None, help="Specify source field (tblout).")
-    fixp.add_argument("--ignore-trna", action="store_true", help="Ignore (drop) tRNA hits (applies only to Infernal input).")
+    grp.add_argument("--all-attrs", action="store_true", help="(Unused) keep all attrs.")
+    grp.add_argument("--none", action="store_true", help="Use '.' for attributes.")
+    grp.add_argument("--desc", action="store_true", help="(Unused) store description only.")
+    fixp.add_argument("--version", type=str, default=None, help="Append version to source.")
+    fixp.add_argument("--extra", type=str, default=None, help="(Unused) extra info in attributes.")
+    fixp.add_argument("--hidedesc", action="store_true", help="(Unused) hide 'desc:'.")
+    fixp.add_argument("--source", type=str, default=None, help="Override source field (infernal).")
+    fixp.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
     fixp.add_argument("--basename", type=str, default=None,
-                      help="A basename to prepend to all generated IDs. For example, if provided as 'ABC', then gene IDs will be formatted as 'ABC_<scaffold>.<type>_g<counter>', e.g. ABC_chrom1.rrna_g2. If the input sequence already begins with the basename, the prefix is not added again.")
+                      help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_contigXY.gene1'.")
+    
+    allp = sub.add_parser('all', help="Fix all => <root>_allfix.gff, then merge => merged_fix.gff.")
+    allp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
+                      help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
+    allp.add_argument("--csv", type=str, default="Rfam_15_0.csv",
+                      help="CSV for lookup (default=Rfam_15_0.csv).")
+    allp.add_argument("--outdir", type=str, required=True,
+                      help="Output directory. Also writes merged_fix.gff.")
+    allp.add_argument("--save-filtered-hits", type=str, default=None,
+                      help="Prefix for dropped-hits log (infernal only).")
+    allp.add_argument("--min-bit", "-T", type=float, default=None,
+                      help="Min bit score for infernal.")
+    allp.add_argument("--max-evalue", "-E", type=float, default=None,
+                      help="Max evalue for infernal.")
+    allp.add_argument("--cmscan", action="store_true", help="Infernal input from cmscan tblout.")
+    allp.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
+    grp2 = allp.add_mutually_exclusive_group()
+    grp2.add_argument("--all-attrs", action="store_true", help="(Unused) keep all attrs.")
+    grp2.add_argument("--none", action="store_true", help="Use '.' for attributes.")
+    grp2.add_argument("--desc", action="store_true", help="(Unused) store description only.")
+    allp.add_argument("--version", type=str, default=None, help="Append version to source.")
+    allp.add_argument("--extra", type=str, default=None, help="(Unused) extra info in attributes.")
+    allp.add_argument("--hidedesc", action="store_true", help="(Unused) hide 'desc:'.")
+    allp.add_argument("--source", type=str, default=None, help="Override source field (infernal).")
+    allp.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
+    allp.add_argument("--basename", type=str, default=None,
+                      help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_contigXY.gene1'.")
+    
     args = parser.parse_args()
+    
     if args.command == "fix":
-        if args.I and args.I[0].lower() == "infernal":
-            if args.min_bit is not None and args.max_evalue is not None:
-                parser.error("ERROR: --min-bit and --max-evalue cannot be used together.")
-            if args.fmt2 and not args.cmscan:
-                parser.error("ERROR: --fmt2 only makes sense with --cmscan.")
-            if args.source and args.version:
-                parser.error("ERROR: --source and --version are incompatible.")
-        process_fix(args)
+        outputs, drop_logs = process_fix_cmd(args)
+        for in_fname, lines in outputs.items():
+            base = os.path.basename(in_fname)
+            root, _ = os.path.splitext(base)
+            out_fname = os.path.join(args.outdir, f"{root}_fix.gff")
+            with open(out_fname, 'w') as outF:
+                outF.write("\n".join(lines) + "\n")
+            logging.info(f"Wrote: {out_fname}")
+            
+            # If infernal => drop log
+            for (fmt, fn) in args.I:
+                if fmt.lower() == "infernal" and fn == in_fname:
+                    drop_prefix = args.save_filtered_hits if args.save_filtered_hits else f"{root}_dropout"
+                    drop_fname = os.path.join(args.outdir, f"{drop_prefix}.log")
+                    with open(drop_fname, 'w') as dF:
+                        if drop_logs[in_fname]:
+                            for ln, reason in drop_logs[in_fname]:
+                                dF.write(f"{ln.rstrip()}  # Dropped: {reason}\n")
+                        else:
+                            dF.write("No dropped hits.\n")
+                    logging.info(f"Wrote drop log: {drop_fname}")
+    
+    elif args.command == "all":
+        if len(args.I) < 2:
+            parser.error("The 'all' command requires at least two input files.")
+        merged, all_drops = process_all(args)
+        
+        # Write merged
+        merged_fname = os.path.join(args.outdir, "merged_fix.gff")
+        with open(merged_fname, 'w') as outF:
+            outF.write("\n".join(merged) + "\n")
+        logging.info(f"Wrote merged file: {merged_fname}")
+        
+        # Write drop logs
+        for (fmt, fn) in args.I:
+            if fmt.lower() == "infernal":
+                base = os.path.basename(fn)
+                root, _ = os.path.splitext(base)
+                drop_prefix = args.save_filtered_hits if args.save_filtered_hits else f"{root}_dropout"
+                drop_fname = os.path.join(args.outdir, f"{drop_prefix}.log")
+                drops = all_drops[fn]
+                with open(drop_fname, 'w') as dF:
+                    if drops:
+                        for ln, reason in drops:
+                            dF.write(f"{ln.rstrip()}  # Dropped: {reason}\n")
+                    else:
+                        dF.write("No dropped hits.\n")
+                logging.info(f"Wrote drop log: {drop_fname}")
+
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     main()
