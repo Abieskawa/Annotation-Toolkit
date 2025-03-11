@@ -153,7 +153,7 @@ Sometimes, it might require to adjust the memory limitation, be careful to any e
 ```
 nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i 07_renamed_braker3_v3/braker_renamed_wout_asterisk.aa -goterms -f tsv --output-file-base 11_interproscan/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
 
-python ../interproscan_evaluate.py -f ../09_rename_braker3_v6/braker_renamed_wout_asterisk.aa -i interproscan_result.tsv -o beltfish
+python ../Annotation-Toolkit/eva_annotation.py interpro -p 07_renamed_braker3_v3/braker_renamed_wout_asterisk.aa -i 11_interproscan/interproscan_result.tsv -o 11_interproscan/asian_hard_clam
 
 #Extract the info MOLAS ask for
 python ../../Annotation-Toolkit/interproscan_extract.py -in interproscan_result.tsv -p marine_tilapia
