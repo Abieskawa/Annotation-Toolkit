@@ -1,5 +1,7 @@
 # Annotation-Toolkit
-This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool.
+This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools does not make it open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding gene, ncRNA, mitochondria gene. Codes for functional annotation for protein-coding gene is recorded here, too. We recommend read and run everything with your genome first to know every details, and any adjustment might require to your genome, if you are familar with the workflow, then switch to the nextflow and docker.
+
+This script has been tested on beltfish, marine tialpia, asian hard clam.
 
 # Check the received genome quality
 Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
