@@ -86,7 +86,7 @@ def downloadhierdata():
                             print(f"Downloading to {kegpathfile}")
                             download(kegpathfile, url)
                             counter += 1
-                            time.sleep(random.randint(101,300))
+                            time.sleep(random.randint(1, 3))
         print(f"updated: {counter}")
 
 
