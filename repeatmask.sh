@@ -70,7 +70,7 @@ if [[ "$log_file" != /* ]]; then
 fi
 
 # Start logging (truncate or create fresh log file):
-echo "Command: $0 $*" > "$log_file"
+echo "Command: $0 $*" >> "$log_file"
 echo "Working dir: $(pwd); Host: $(hostname); Date: $(date)" >> "$log_file"
 echo "Log file path: $log_file" >> "$log_file"
 echo "----------------------------------------" >> "$log_file"
