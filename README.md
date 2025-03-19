@@ -14,11 +14,18 @@ The miniprot is recommended to apply here. Please start a docker of BUSCO first 
 ```
 nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o asian_hard_clam_clean_genome_miniprot --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
 ```
-### Check with FCS adapter/gx
+
+### Check with FCS adaptor/gx
 It requires some efforts to configure, users can follow the instruction recorded in the link.  
 gx manual and example: https://github.com/ncbi/fcs/wiki/FCS-GX-quickstart
 gx report info: https://github.com/ncbi/fcs/wiki/FCS-GX-output
 ```
+#Check contamination from adpator 
+{the path of this directory}/run_fcsadaptor.sh --fasta-input {genome fasta} --output-dir {output directory} --euk
+#Remove the adaptor
+cat {genome fasta} | python3 {the path of this directory}/fcs.py clean genome --action-report {the path of fcs adapter outdir}/fcs_adaptor_report.txt --output clean.fasta --contam-fasta-out contam.fasta
+
+#Check contamination from other species
 python3 {the path of this directory}/fcs.py screen genome --fasta {genome fasta} --out-dir {output directory} --gx-db "$GXDB_LOC/gxdb" --tax-id {tax id}
 
 #replace all in fifth column to EXCLUDE (depends on user).
@@ -53,7 +60,7 @@ nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome
 ## Run mitochondria Annotation with mitos
 Version: runmitos.py 2.1.9
 ```
-runmitos.py -i 00_annotation_start_genome/MTW_genome_clean_mitochondria.fasta -c 5 -R ../MITOS2-refdata/ -r ../MITOS2-refdata/refseq89m -o 06_mitos/ --debug
+runmitos.py -i 00_annotation_start_genome/MTW_genome_clean_mitochondria.fasta -c 5 -R ../MITOS2-refdata/ -r ../MITOS2-refdata/refseq89m -o 06_mitos/ --debug --best
 ```
 
 ## Run ncRNA Annotation
