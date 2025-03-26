@@ -3,8 +3,7 @@
 Combined GFF tool:  
   - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos) to create 
     gene/child/exon hierarchies and ensures only 9 columns with a single "##gff-version 3".
-  - "fix" mode: processes each file separately => <basename>_fix.gff.
-  - "all" mode: processes all files => for each file also writes an <basename>_fix.gff, 
+  - Processes all input files (provided via -I) and writes intermediate <basename>_fix.gff files, 
     then merges them into one merged_fix.gff.
   - infernal2gff: we use bit score as the score value in gff file.
   
@@ -99,9 +98,8 @@ def fix_mitos_attr_field(attr, seq, args):
         out += ';'
     return out
 
-# --- Revised mitos processing with dropout logging and input sorting ---
+# --- Revised mitos processing with CDS insertion using exon coordinates ---
 def fix_mitos_lines(lines, args):
-    # Sort non-header lines by start coordinate (column 4)
     header_lines = [l for l in lines if l.startswith("#")]
     data_lines = [l for l in lines if not l.startswith("#")]
     try:
@@ -112,12 +110,13 @@ def fix_mitos_lines(lines, args):
 
     local_dropped = []  # Collect dropout entries for mitos
     inserted_mrna_ids = set()
-    inserted_cds_ids = set()  # Track CDS insertions
     gene_info = {} 
-    child_biotype = {}  # For ncRNA genes
-    transcript_map = {}  # mapping normalized transcript IDs -> full transcript ID
+    child_biotype = {}
+    transcript_map = {}
     output_lines = []
-    # Process each line
+    cds_counter = {}
+    exon_counter = {}
+
     for line in lines:
         line = line.rstrip("\n")
         if line.startswith("#"):
@@ -125,7 +124,7 @@ def fix_mitos_lines(lines, args):
             continue
         parts = line.split('\t')
         if len(parts) != 9:
-            local_dropped.append((line, "Incorrect number of columns"))
+            local_dropped.append((line, "[mitos] Incorrect number of columns"))
             continue
         parts[8] = fix_mitos_attr_field(parts[8], parts[0], args)
         feature = parts[2]
@@ -153,9 +152,8 @@ def fix_mitos_lines(lines, args):
         elif feature == "exon":
             attrs = parse_attrs(parts[8])
             mrna_id = attrs.get("Parent", None)
-            # Drop exon if Parent transcript indicates origin-of-replication error.
             if mrna_id and (("transcript_oh" in mrna_id.lower()) or ("transcript_ol" in mrna_id.lower())):
-                local_dropped.append((line, "Parent transcript indicates origin-of-replication error"))
+                local_dropped.append((line, "[mitos] Parent transcript indicates origin-of-replication error"))
                 continue
             if mrna_id:
                 norm_mrna = normalize_id(mrna_id)
@@ -186,28 +184,36 @@ def fix_mitos_lines(lines, args):
                                 reconst_attrs({'ID': mrna_id, 'Parent': rec["final_id"]})
                             ])
                             output_lines.append(mrna_line)
-                            if mrna_id not in inserted_cds_ids:
-                                inserted_cds_ids.add(mrna_id)
-                                cds_line = "\t".join([
-                                    rec["seq"],
-                                    rec["source"],
-                                    "CDS",
-                                    rec["start"],
-                                    rec["end"],
-                                    "1",
-                                    rec["strand"],
-                                    "0",
-                                    reconst_attrs({'ID': f"{mrna_id}.CDS1", 'Parent': mrna_id})
-                                ])
-                                output_lines.append(cds_line)
                         break
-                # Use Name attribute if available to build the exon ID
-                name_attr = attrs.get("Name", "").strip()
-                if name_attr:
-                    norm_name = re.sub(r'\s+', '_', name_attr)
-                    exon_id = f"{mrna_id}.{norm_name}"
+                if mrna_id in inserted_mrna_ids:
+                    if mrna_id not in cds_counter:
+                        cds_counter[mrna_id] = 0
+                    cds_counter[mrna_id] += 1
+                    cds_id = f"{mrna_id}.CDS{cds_counter[mrna_id]}"
+                    cds_line = "\t".join([
+                        parts[0],
+                        parts[1],
+                        "CDS",
+                        parts[3],
+                        parts[4],
+                        "-",
+                        parts[6],
+                        "0",
+                        reconst_attrs({'ID': cds_id, 'Parent': mrna_id})
+                    ])
+                    output_lines.append(cds_line)
+                if parts[1] == "mitos":
+                    if mrna_id not in exon_counter:
+                        exon_counter[mrna_id] = 0
+                    exon_counter[mrna_id] += 1
+                    exon_id = f"{mrna_id}.exon{exon_counter[mrna_id]}"
                 else:
-                    exon_id = f"{mrna_id}.exon1"
+                    name_attr = attrs.get("Name", "").strip()
+                    if name_attr:
+                        norm_name = re.sub(r'\s+', '_', name_attr)
+                        exon_id = f"{mrna_id}.{norm_name}"
+                    else:
+                        exon_id = f"{mrna_id}.exon1"
                 attrs["ID"] = exon_id
                 attrs["Parent"] = mrna_id
                 parts[8] = reconst_attrs(attrs)
@@ -278,7 +284,7 @@ def convert_tblout_to_gff(lines, args):
         fs = line.rstrip("\n").split()
         if args.fmt2:
             if len(fs) < 27:
-                dropped.append((line, "Insufficient fields"))
+                dropped.append((line, "[infernal] Insufficient fields"))
                 continue
             seq = fs[3]
             s_from, s_to = fs[9], fs[10]
@@ -286,14 +292,14 @@ def convert_tblout_to_gff(lines, args):
             feature = fs[1]
         else:
             if len(fs) < 18:
-                dropped.append((line, "Insufficient fields"))
+                dropped.append((line, "[infernal] Insufficient fields"))
                 continue
             seq = fs[2]
             s_from, s_to = fs[7], fs[8]
             strand, score, ev = fs[9], fs[14], fs[15]
             feature = fs[2]
         if args.ignore_trna and "trna" in feature.lower():
-            dropped.append((line, "Ignored tRNA (due to --ignore-trna)"))
+            dropped.append((line, "[infernal] Ignored tRNA (due to --ignore-trna)"))
             continue
         try:
             if strand == "+":
@@ -301,13 +307,13 @@ def convert_tblout_to_gff(lines, args):
             else:
                 s, e = int(s_to), int(s_from)
         except Exception as ex:
-            dropped.append((line, f"Coord parse error: {ex}"))
+            dropped.append((line, f"[infernal] Coord parse error: {ex}"))
             continue
         if args.min_bit is not None and float(score) < args.min_bit:
-            dropped.append((line, "Bit score below threshold"))
+            dropped.append((line, "[infernal] Bit score below threshold"))
             continue
         if args.max_evalue is not None and float(ev) > args.max_evalue:
-            dropped.append((line, "E-value above threshold"))
+            dropped.append((line, "[infernal] E-value above threshold"))
             continue
         accepted.append("\t".join([seq, src, feature, str(s), str(e), score, strand, ".", "."]))
     return accepted, dropped
@@ -394,7 +400,7 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                     if args.basename:
                         gid = f"{args.basename}_{seq}_{normalize_type(child_tok + '_g')}{cnts[(seq, child_tok.lower() + '_g')]}"
                     else:
-                        gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")], basename=args.basename)
+                        gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")])
                     pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
                     out.append("\t".join([seq, src, "gene", start, end, score, strand, phase, reconst_attrs(pattrs)]))
                     d = parse_attrs(attr)
@@ -441,17 +447,28 @@ def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
 
 # ---------------- Cleanup ----------------
 def cleanup_for_fix(lines):
+    # Count all lines starting with "#" in the original file.
+    header_count_before = sum(1 for line in lines if line.startswith("#"))
     out = []
     version_found = False
     for line in lines:
+        # Drop any special spec-version header.
         if line.startswith("#!gff-spec-version"):
             continue
+        # Process the standard GFF version header.
         if line.startswith("##gff-version"):
             if not version_found:
                 out.append("##gff-version 3")
                 version_found = True
-            continue
-        out.append(line)
+            else:
+                # Drop duplicate version headers.
+                continue
+        # Preserve any other header/comment lines (or empty lines) as is.
+        elif line.startswith("#"):
+            out.append(line)
+        else:
+            out.append(line)
+    # Now, for non-comment lines, ensure that only the first 9 columns are kept.
     final = []
     for line in out:
         if line.startswith("#"):
@@ -462,7 +479,10 @@ def cleanup_for_fix(lines):
             final.append("\t".join(parts[:9]))
         else:
             final.append(line)
-    return final
+    # Count the header lines in the final output.
+    header_count_after = sum(1 for line in final if line.startswith("#"))
+    dropped_header_count = header_count_before - header_count_after
+    return final, dropped_header_count, header_count_before
 
 # ---------------- Hierarchy & Sorting ----------------
 def get_hierarchy_level(feature, attributes):
@@ -511,106 +531,35 @@ def sort_merge_gff_lines(lines):
 # ---------------- File Processing ----------------
 def process_file(fmt, fname, args):
     with open(fname, 'r') as f:
-        lines = f.readlines()
-    input_count = len(lines)
+        orig_lines = f.readlines()
+    input_count = len(orig_lines)
+    # Count all header lines starting with "#" immediately after reading the file.
+    orig_header_count = sum(1 for line in orig_lines if line.startswith("#"))
     dropped = []
     fmt_lower = fmt.lower()
     conv_count = None
     if fmt_lower == "infernal":
-        converted, drops2 = convert_tblout_to_gff(lines, args)
+        converted, drops2 = convert_tblout_to_gff(orig_lines, args)
         conv_count = len(converted)
         lines = converted
         dropped = drops2
     elif fmt_lower in ("braker3", "mitos", "trnascan-se"):
-        pass
+        lines = orig_lines[:]  # Use original lines for processing
     fixed, local_dropped = fix_gff_lines_main(lines, args.csv, fmt_lower, args)
     dropped.extend(local_dropped)
-    return fixed, dropped, input_count, conv_count
+    cleaned, _, _ = cleanup_for_fix(fixed)
+    # Use the original header count from the file.
+    header_count_before = orig_header_count
+    header_dropped = max(header_count_before - 1, 0)
+    base = os.path.basename(fname)
+    root, _ = os.path.splitext(base)
+    out_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
+    with open(out_fname, 'w') as outf:
+        outf.write("\n".join(cleaned) + "\n")
+    print(f"----\nWrote intermediate all-fix file: {out_fname} with {len(cleaned)} lines.")
+    return cleaned, dropped, input_count, conv_count, header_count_before
 
-# ---------------- fix mode ----------------
-def process_fix_cmd(args):
-    outputs = {}
-    drop_logs = {}
-    metrics = {}
-    global_log = args.save_filtered_hits if args.save_filtered_hits else os.path.join(args.outdir, "combined_dropout.log")
-    # Clear global dropout log
-    with open(global_log, 'w') as gl:
-        gl.write("Combined dropout log\n\n")
-    for (fmt, fname) in args.I:
-        fixed, dropped, input_count, conv_count = process_file(fmt, fname, args)
-        cleaned = cleanup_for_fix(fixed)
-        outputs[(fmt, fname)] = cleaned
-        drop_logs[(fmt, fname)] = dropped
-        metrics[(fmt, fname)] = (input_count, conv_count)
-        if dropped:
-            with open(global_log, 'a') as logF:
-                logF.write(f"==== Dropouts for {fname} (FORMAT: {fmt}) ====\n")
-                for entry in dropped:
-                    logF.write(f"{entry[0]}\t{entry[1]}\n")
-                logF.write("==== End Dropouts for this file ====\n\n")
-    summary_by_type = defaultdict(list)
-    for (fmt, in_fname), lines in outputs.items():
-        input_count, conv_count = metrics[(fmt, in_fname)]
-        base = os.path.basename(in_fname)
-        root, _ = os.path.splitext(base)
-        out_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
-        with open(out_fname, 'w') as outF:
-            outF.write("\n".join(lines) + "\n")
-        output_count = len(lines)
-        dropped_count = len(drop_logs[(fmt, in_fname)])
-        if fmt.lower() == "mitos":
-            mrna_count = sum(1 for line in lines if not line.startswith("#") and line.split("\t")[2].lower() == "mrna")
-            cds_count = sum(1 for line in lines if not line.startswith("#") and line.split("\t")[2].lower() == "cds")
-            msg = (f"Mitos Processing\n\n"
-                   f"Input File: {in_fname}\n"
-                   f"Total Lines: {input_count}\n\n"
-                   f"Output File: {os.path.basename(out_fname)}\n"
-                   f"Total Lines: {output_count}\n"
-                   f"Inserted {mrna_count} mRNA lines and {cds_count} CDS lines\n"
-                   f"Dropped {dropped_count} entries (see log: {global_log})\n"
-                   f"------------------------------------------------------------")
-            summary_by_type["mitos"].append(msg)
-        elif fmt.lower() == "infernal":
-            parent_count = sum(1 for line in lines if not line.startswith("#") and line.split("\t")[2].lower() == "gene")
-            exon_count = sum(1 for line in lines if not line.startswith("#") and line.split("\t")[2].lower() == "exon")
-            msg = (f"Infernal Processing\n\n"
-                   f"Input File: {in_fname}\n"
-                   f"Total Lines: {input_count}\n\n"
-                   f"Processing Steps:\n"
-                   f"  - Converted to GFF: {conv_count} lines\n"
-                   f"  - Dropped Entries: {dropped_count}\n"
-                   f"  - Loaded Rfam CSV: {len(load_csv(args.csv))} rows\n\n"
-                   f"Output File: {os.path.basename(out_fname)}\n"
-                   f"Total Lines: {output_count}\n"
-                   f"Drop Log: {global_log}\n\n"
-                   f"Added {parent_count} parent lines, {exon_count} exon lines\n"
-                   f"------------------------------------------------------------")
-            summary_by_type["infernal"].append(msg)
-        elif fmt.lower() == "trnascan-se":
-            gene_count = sum(1 for line in lines if not line.startswith("#") and line.split("\t")[2].lower() == "gene")
-            msg = (f"tRNAscan-SE Processing\n\n"
-                   f"Input File: {in_fname}\n"
-                   f"Total Lines: {input_count}\n\n"
-                   f"Output File: {os.path.basename(out_fname)}\n"
-                   f"Total Lines: {output_count}\n"
-                   f"Inserted {gene_count} gene entries\n"
-                   f"------------------------------------------------------------")
-            summary_by_type["trnascan-se"].append(msg)
-        else:
-            msg = (f"{fmt.upper()} Processing\n\n"
-                   f"Input File: {in_fname}\n"
-                   f"Total Lines: {input_count}\n\n"
-                   f"Output File: {os.path.basename(out_fname)}\n"
-                   f"Total Lines: {output_count}\n"
-                   f"------------------------------------------------------------")
-            summary_by_type[fmt.lower()].append(msg)
-    for file_type, summaries in summary_by_type.items():
-        print(f"\n==== Summary for {file_type.upper()} Files ====\n")
-        for msg in summaries:
-            print(msg)
-    return outputs, drop_logs, metrics
-
-# ---------------- all mode ----------------
+# ---------------- All mode ----------------
 def process_all(args):
     non_mitos_lines = []
     mitos_lines = []
@@ -620,20 +569,23 @@ def process_all(args):
     with open(global_log, 'w') as gl:
         gl.write("Combined dropout log\n\n")
     for (fmt, fname) in args.I:
-        fixed, dropped, input_count, conv_count = process_file(fmt, fname, args)
-        cleaned = cleanup_for_fix(fixed)
+        fixed, dropped, input_count, conv_count, orig_header_count = process_file(fmt, fname, args)
+        cleaned, _, _ = cleanup_for_fix(fixed)
+        # Use the original header count from the file.
+        header_count_before = orig_header_count
+        header_dropped = max(header_count_before - 1, 0)
         base = os.path.basename(fname)
         root, _ = os.path.splitext(base)
-        out_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
-        with open(out_fname, 'w') as outf:
-            outf.write("\n".join(cleaned) + "\n")
-        print(f"----\nWrote intermediate all-fix file: {out_fname} with {len(cleaned)} lines.")
+        intermediate_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
+        with open(intermediate_fname, 'r') as inf:
+            intermediate_lines = [line.strip() for line in inf.readlines()]
+        output_count = len(intermediate_lines)
         if fmt.lower() == "mitos":
             mitos_lines.extend(cleaned)
         else:
             non_mitos_lines.extend(cleaned)
         all_drops[fname] = dropped
-        metrics[(fmt, fname)] = (input_count, conv_count)
+        metrics[(fmt, fname)] = (input_count, conv_count, header_dropped, header_count_before)
         if dropped:
             with open(global_log, 'a') as logF:
                 logF.write(f"==== Dropouts for {fname} (FORMAT: {fmt}) ====\n")
@@ -646,14 +598,14 @@ def process_all(args):
     print()
     summary_by_type = defaultdict(list)
     for (fmt, fn) in args.I:
+        input_count, conv_count, header_dropped, header_count_before = metrics[(fmt, fn)]
+        base = os.path.basename(fn)
+        root, _ = os.path.splitext(base)
+        intermediate_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
+        with open(intermediate_fname, 'r') as inf:
+            intermediate_lines = [line.strip() for line in inf.readlines()]
+        output_count = len(intermediate_lines)
         if fmt.lower() == "mitos":
-            input_count, conv_count = metrics[(fmt, fn)]
-            base = os.path.basename(fn)
-            root, _ = os.path.splitext(base)
-            intermediate_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
-            with open(intermediate_fname, 'r') as inf:
-                intermediate_lines = [line.strip() for line in inf.readlines()]
-            output_count = len(intermediate_lines)
             mrna_count = sum(1 for line in intermediate_lines if not line.startswith("#") and line.split("\t")[2].lower() == "mrna")
             cds_count = sum(1 for line in intermediate_lines if not line.startswith("#") and line.split("\t")[2].lower() == "cds")
             dropout_count = len(all_drops[fn])
@@ -662,18 +614,12 @@ def process_all(args):
                    f"Total Lines: {input_count}\n\n"
                    f"Output File: {os.path.basename(intermediate_fname)}\n"
                    f"Total Lines: {output_count}\n"
+                   f"Dropped header lines: {header_dropped} (from {header_count_before} originally)\n"
                    f"Inserted {mrna_count} mRNA lines and {cds_count} CDS lines\n"
                    f"Dropped {dropout_count} entries (see log: {global_log})\n"
                    f"------------------------------------------------------------")
             summary_by_type["mitos"].append(msg)
         elif fmt.lower() in ("infernal", "trnascan-se"):
-            input_count, conv_count = metrics[(fmt, fn)]
-            base = os.path.basename(fn)
-            root, _ = os.path.splitext(base)
-            intermediate_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
-            with open(intermediate_fname, 'r') as inf:
-                intermediate_lines = [line.strip() for line in inf.readlines()]
-            output_count = len(intermediate_lines)
             dropped_count = len(all_drops[fn])
             if fmt.lower() == "infernal":
                 parent_count = sum(1 for line in intermediate_lines if not line.startswith("#") and line.split("\t")[2].lower() == "gene")
@@ -687,6 +633,7 @@ def process_all(args):
                        f"  - Loaded Rfam CSV: {len(load_csv(args.csv))} rows\n\n"
                        f"Output File: {os.path.basename(intermediate_fname)}\n"
                        f"Total Lines: {output_count}\n"
+                       f"Dropped header lines: {header_dropped} (from {header_count_before} originally)\n"
                        f"Drop Log: {global_log}\n\n"
                        f"Added {parent_count} parent lines, {exon_count} exon lines\n"
                        f"------------------------------------------------------------")
@@ -698,17 +645,11 @@ def process_all(args):
                        f"Total Lines: {input_count}\n\n"
                        f"Output File: {os.path.basename(intermediate_fname)}\n"
                        f"Total Lines: {output_count}\n"
+                       f"Dropped header lines: {header_dropped} (from {header_count_before} originally)\n"
                        f"Inserted {gene_count} gene entries\n"
                        f"------------------------------------------------------------")
                 summary_by_type["trnascan-se"].append(msg)
         else:
-            input_count, conv_count = metrics[(fmt, fn)]
-            base = os.path.basename(fn)
-            root, _ = os.path.splitext(base)
-            intermediate_fname = os.path.join(args.outdir, f"{root}_{fmt}_fix.gff")
-            with open(intermediate_fname, 'r') as inf:
-                intermediate_lines = [line.strip() for line in inf.readlines()]
-            output_count = len(intermediate_lines)
             msg = (f"{fmt.upper()} Processing\n\n"
                    f"Input File: {fn}\n"
                    f"Total Lines: {input_count}\n\n"
@@ -725,65 +666,37 @@ def process_all(args):
 # ---------------- main ----------------
 def main():
     parser = argparse.ArgumentParser(
-        description="GFF combine & fix tool. In 'all' mode, also produce intermediate _fix.gff files."
+        description="GFF combine & fix tool. Processes all input files, writes intermediate _fix.gff files, then merges them into merged_fix.gff."
     )
-    sub = parser.add_subparsers(dest='command', required=True)
-    
-    fixp = sub.add_parser('fix', help="Process each file separately => <root>_fix.gff.")
-    fixp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
-                      help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
-    fixp.add_argument("--csv", type=str, default="Rfam_15_0.csv",
-                      help="CSV for lookup (default=Rfam_15_0.csv).")
-    fixp.add_argument("--outdir", type=str, required=True,
-                      help="Output directory for separate <root>_fix.gff.")
-    fixp.add_argument("--save-filtered-hits", type=str, default=None,
-                      help="Prefix (or filename) for dropped-hits log (global for all files).")
-    fixp.add_argument("--min-bit", "-T", type=float, default=None,
-                      help="Min bit score for infernal.")
-    fixp.add_argument("--max-evalue", "-E", type=float, default=None,
-                      help="Max evalue for infernal.")
-    fixp.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
-    fixp.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
-    fixp.add_argument("--basename", type=str, default=None,
-                      help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_rrna.g1'.")
-    fixp.add_argument("--source", type=str, default=None,
-                      help="Specify source field for infernal-to-GFF conversion. If provided, this value is used in the second column; otherwise, default is 'cmscan'.")
-    
-    allp = sub.add_parser('all', help="Fix all => <root>_fix.gff, then merge => merged_fix.gff.")
-    allp.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
-                      help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
-    allp.add_argument("--csv", type=str, default="Rfam_15_0.csv",
-                      help="CSV for lookup (default=Rfam_15_0.csv).")
-    allp.add_argument("--outdir", type=str, required=True,
-                      help="Output directory. Also writes merged_fix.gff.")
-    allp.add_argument("--save-filtered-hits", type=str, default=None,
-                      help="Prefix (or filename) for dropped-hits log (global for all files).")
-    allp.add_argument("--min-bit", "-T", type=float, default=None,
-                      help="Min bit score for infernal.")
-    allp.add_argument("--max-evalue", "-E", type=float, default=None,
-                      help="Max evalue for infernal.")
-    allp.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
-    allp.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
-    allp.add_argument("--basename", type=str, default=None,
-                      help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_rrna.g1'.")
-    allp.add_argument("--source", type=str, default=None,
-                      help="Specify source field for infernal-to-GFF conversion. If provided, this value is used in the second column; otherwise, default is 'cmscan'.")
-    
+    parser.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
+                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
+    parser.add_argument("--csv", type=str, default="Rfam_15_0.csv",
+                        help="CSV for lookup (default=Rfam_15_0.csv).")
+    parser.add_argument("--outdir", type=str, required=True,
+                        help="Output directory. Also writes merged_fix.gff.")
+    parser.add_argument("--save-filtered-hits", type=str, default=None,
+                        help="Prefix (or filename) for dropped-hits log (global for all files).")
+    parser.add_argument("--min-bit", "-T", type=float, default=None,
+                        help="Min bit score for infernal.")
+    parser.add_argument("--max-evalue", "-E", type=float, default=None,
+                        help="Max evalue for infernal.")
+    parser.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
+    parser.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
+    parser.add_argument("--basename", type=str, default=None,
+                        help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_rrna.g1'.")
+    parser.add_argument("--source", type=str, default=None,
+                        help="Specify source field for infernal-to-GFF conversion. If provided, this value is used in the second column; otherwise, default is 'cmscan'.")
     args = parser.parse_args()
+    
     csv_data = load_csv(args.csv)
     csv_count = len(csv_data)
     
-    if args.command == "fix":
-        outputs, drop_logs, metrics = process_fix_cmd(args)
-    elif args.command == "all":
-        merged, all_drops, metrics = process_all(args)
-        merged_fname = os.path.join(args.outdir, "merged_fix.gff")
-        with open(merged_fname, 'w') as outF:
-            outF.write("\n".join(merged) + "\n")
-        merged_count = len(merged)
-        print(f"\nFinal Merging\n\nMerged File Created: {os.path.basename(merged_fname)}\nTotal Lines in Merged File: {merged_count}\n------------------------------------------------------------")
-    else:
-        parser.print_help()
+    merged, all_drops, metrics = process_all(args)
+    merged_fname = os.path.join(args.outdir, "merged_fix.gff")
+    with open(merged_fname, 'w') as outF:
+        outF.write("\n".join(merged) + "\n")
+    merged_count = len(merged)
+    print(f"\nFinal Merging\n\nMerged File Created: {os.path.basename(merged_fname)}\nTotal Lines in Merged File: {merged_count}\n------------------------------------------------------------")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
