@@ -7,7 +7,7 @@ import re
 import shutil
 
 def usage():
-    print("Usage: {} -g <input_genome> -r <input_gff> -p <prefix> -a <annotator> [-v] [--mitos <mitos_fasta>]".format(sys.argv[0]))
+    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
@@ -156,39 +156,27 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                     fout.write(line_out + "\n")
     return
 
-def update_mitos_pep(pep_file, mitos_file):
+def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
     """
-    For records in the pep_file whose headers contain "_MT_transcript_",
-    remove everything before and including "_MT_transcript_" to obtain the gene name (in lowercase).
-    Look up that gene name in the mitos_file FASTA; if found, replace the sequence with the mitos sequence
-    (after removing any trailing "*" if present).
+    Process the input peptide FASTA file.
+    
+    For mitos input (pep_type == "mitos"):
+      - Remove any trailing "*" from sequences.
+      - For each record, assume the header is in the format:
+            >MT; 487-1453; +; nad1
+        and extract the gene name from the last semicolon-delimited field.
+      - If the header already starts with header_prefix+"_transcript_", leave it unchanged.
+      - Otherwise, write a new header as:
+            >{header_prefix}_transcript_{gene}
+    
+    For braker input (pep_type == "braker"):
+      - Remove any trailing "*" from sequences.
+      - If the header already starts with header_prefix+"_", leave it unchanged.
+      - Otherwise, change the header to:
+            >{header_prefix}_{original_header_without '>'}
     """
-    # Parse the mitos FASTA into a dictionary: key = gene name (lowercase), value = sequence.
-    mitos_dict = {}
-    current_header = None
-    current_seq = []
-    with open(mitos_file) as fin:
-        for line in fin:
-            line = line.strip()
-            if line.startswith(">"):
-                if current_header is not None:
-                    seq = "".join(current_seq)
-                    seq = seq.rstrip("*")  # remove trailing "*" if any
-                    gene = current_header[1:].split(";")[-1].strip().lower()
-                    mitos_dict[gene] = seq
-                current_header = line
-                current_seq = []
-            else:
-                current_seq.append(line)
-        if current_header is not None:
-            seq = "".join(current_seq)
-            seq = seq.rstrip("*")
-            gene = current_header[1:].split(";")[-1].strip().lower()
-            mitos_dict[gene] = seq
-
-    # Process the pep_file.
     records = []
-    with open(pep_file) as fin:
+    with open(pep_in) as fin:
         header = None
         seq_lines = []
         for line in fin:
@@ -201,29 +189,37 @@ def update_mitos_pep(pep_file, mitos_file):
                 seq_lines.append(line.strip())
         if header:
             records.append((header, "".join(seq_lines)))
-
-    # Update records if header contains "_transcript_"
     updated_records = []
-    search_str = "_transcript_"
-    for header, seq in records:
-        if search_str in header:
-            # Extract gene name as the part after the search string.
-            gene_name = header.split(search_str)[-1].strip().lower()
-            if gene_name in mitos_dict:
-                new_seq = mitos_dict[gene_name]
-                updated_records.append((header, new_seq))
-                print(f"Updated {header} with mitos sequence for gene {gene_name}.")
-            else:
-                print(f"WARNING: No mitos sequence found for gene {gene_name}. Keeping original.", file=sys.stderr)
+    if pep_type == "mitos":
+        expected_prefix = f"{header_prefix}_transcript_"
+        for header, seq in records:
+            seq = seq.rstrip("*")
+            if header.startswith(">" + expected_prefix):
                 updated_records.append((header, seq))
-        else:
-            updated_records.append((header, seq))
-    
-    # Write updated records back to the pep_file.
-    with open(pep_file, "w") as fout:
+            else:
+                # Assume header format: ">MT; 487-1453; +; nad1"
+                parts = header[1:].split(";")
+                gene = parts[-1].strip().lower()
+                new_header = f">{expected_prefix}{gene}"
+                updated_records.append((new_header, seq))
+        print("Processed mitos peptide input.")
+    elif pep_type == "braker":
+        expected_prefix = f"{header_prefix}_"
+        for header, seq in records:
+            seq = seq.rstrip("*")
+            if header.startswith(">" + expected_prefix):
+                updated_records.append((header, seq))
+            else:
+                new_header = f">{expected_prefix}{header[1:].strip()}"
+                updated_records.append((new_header, seq))
+        print("Processed braker peptide input.")
+    else:
+        print("Unknown peptide type specified.", file=sys.stderr)
+        sys.exit(1)
+    with open(pep_out, "w") as fout:
         for rec in updated_records:
             fout.write(f"{rec[0]}\n{rec[1]}\n")
-    print(f"Mitos peptide update completed for {pep_file}.")
+    print(f"Peptide FASTA processed and written to: {pep_out}")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -231,30 +227,31 @@ def main():
     )
     parser.add_argument("-g", "--genome", required=True, help="Input genome file")
     parser.add_argument("-r", "--gff", required=True, help="Input GFF file")
-    parser.add_argument("-p", "--prefix", required=True, help="Prefix for output files")
+    parser.add_argument("-p", "--prefix", required=True, help="File prefix for output files (e.g. T_jap)")
     parser.add_argument("-a", "--annotator", required=True, help="Annotator name (e.g. braker3)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output")
-    parser.add_argument("--mitos", help="Optional mitos peptide FASTA file with correct mitochondrial sequences", default=None)
+    parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
+    parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
+    parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
     args = parser.parse_args()
 
     input_genome = args.genome
     input_gff = args.gff
-    prefix = args.prefix
+    file_prefix = args.prefix
     annotator = args.annotator
     verbose = args.verbose
+    header_prefix = args.nameprefix if args.nameprefix else file_prefix
 
     # Define output file names.
-    output_intron_lowercase_genome = f"{prefix}_genome_intron-lower.fa"
-    intron_bed = f"{prefix}_{annotator}_intron.bed"
-    gene_bed = f"{prefix}_{annotator}_gene.bed"
-    trans_bed = f"{prefix}_{annotator}_trans.bed"
-    gene_fa = f"{prefix}_{annotator}_gene.fa"
-    trans_fa = f"{prefix}_{annotator}_trans.fa"
-    cds_fa_temp = f"{prefix}_{annotator}_CDS_70.fa"
-    pep_fa_temp = f"{prefix}_{annotator}_pep_70.fa"
-    cds_fa = f"{prefix}_{annotator}_CDS.fa"
-    pep_fa = f"{prefix}_{annotator}_pep.fa"
-    aa_fa = f"{prefix}_{annotator}_aa.fa"
+    output_intron_lowercase_genome = f"{file_prefix}_genome_intron-lower.fa"
+    intron_bed = f"{file_prefix}_{annotator}_intron.bed"
+    gene_bed = f"{file_prefix}_{annotator}_gene.bed"
+    trans_bed = f"{file_prefix}_{annotator}_trans.bed"
+    gene_fa = f"{file_prefix}_{annotator}_gene.fa"
+    trans_fa = f"{file_prefix}_{annotator}_trans.fa"
+    cds_fa_temp = f"{file_prefix}_{annotator}_CDS_70.fa"
+    pep_fa_final = f"{file_prefix}_{annotator}_pep.fa"
+    # (CDS output is preserved.)
 
     # -----------------------------------------------------
     # Generate a GTF file from the input GFF using gffread.
@@ -262,7 +259,7 @@ def main():
     cmd_gffread_gtf = ["gffread", "-T", input_gff, "-o", gtf_generated]
     run_command(cmd_gffread_gtf)
     print(f"GTF file generated: {gtf_generated}")
-    # We'll use the generated GTF for CDS/peptide extraction.
+    # We'll use the generated GTF for any downstream processing if needed.
     # For BED extractions, we work with the original GFF.
     # -----------------------------------------------------
 
@@ -313,74 +310,78 @@ def main():
             f.write(content)
         print(f"Cleaned {fasta_file} of stranded annotations.")
 
-    # Run gffread (using the generated GTF) to extract CDS and peptide FASTA sequences.
+    # Run gffread (using the generated GTF) to extract CDS FASTA sequences only.
     cmd_gffread = [
         "gffread", "-g", output_intron_lowercase_genome,
         "-x", cds_fa_temp,
-        "-y", pep_fa_temp,
         gtf_generated
     ]
     run_command(cmd_gffread)
-    print(f"gffread produced {cds_fa_temp} and {pep_fa_temp}")
+    print(f"gffread produced {cds_fa_temp}")
 
-    # Process CDS and peptide FASTA files (simulate the awk/sort/awk pipeline).
-    for temp_file in [cds_fa_temp, pep_fa_temp]:
-        output_file = temp_file.replace("_70", "")
-        records = []
-        with open(temp_file, "r") as fin:
-            header = None
-            seq_lines = []
-            for line in fin:
-                if line.startswith(">"):
-                    if header:
-                        records.append((header, "".join(seq_lines)))
-                    header = line.strip()
-                    seq_lines = []
-                else:
-                    seq_lines.append(line.strip())
-            if header:
-                records.append((header, "".join(seq_lines)))
-        records.sort(key=lambda x: x[0])
-        with open(output_file, "w") as fout:
-            for rec in records:
-                fout.write(f"{rec[0]}\n{rec[1]}\n")
-        print(f"Processed FASTA file written: {output_file}")
+    # Process CDS FASTA file (simulate the awk/sort/awk pipeline).
+    cds_fa = cds_fa_temp.replace("_70", "")
+    records = []
+    with open(cds_fa_temp, "r") as fin:
+        header = None
+        seq_lines = []
+        for line in fin:
+            if line.startswith(">"):
+                if header:
+                    records.append((header, "".join(seq_lines)))
+                header = line.strip()
+                seq_lines = []
+            else:
+                seq_lines.append(line.strip())
+        if header:
+            records.append((header, "".join(seq_lines)))
+    records.sort(key=lambda x: x[0])
+    with open(cds_fa, "w") as fout:
+        for rec in records:
+            fout.write(f"{rec[0]}\n{rec[1]}\n")
+    print(f"Processed CDS FASTA file written: {cds_fa}")
 
-    # Rename peptide file: replace '.t' with '.p' in header if needed.
-    with open(pep_fa_temp.replace("_70", ""), "r") as fin:
-        content = fin.read()
-    content = re.sub(r'\.t', '.p', content)
-    with open(pep_fa, "w") as fout:
-        fout.write(content)
-    print(f"Peptide file renamed to: {pep_fa}")
+    # ----- Peptide FASTA Processing -----
+    processed_pep_files = []
+    if args.pep_mitos:
+        out_pep_mitos = f"{file_prefix}_{annotator}_pep_mitos.fa"
+        process_pep_file(args.pep_mitos, out_pep_mitos, header_prefix, "mitos")
+        processed_pep_files.append(out_pep_mitos)
+    if args.pep_braker:
+        out_pep_braker = f"{file_prefix}_{annotator}_pep_braker.fa"
+        process_pep_file(args.pep_braker, out_pep_braker, header_prefix, "braker")
+        processed_pep_files.append(out_pep_braker)
+    if processed_pep_files:
+        final_pep = pep_fa_final  # final peptide FASTA file name
+        with open(final_pep, "w") as fout:
+            for f in processed_pep_files:
+                with open(f) as fin:
+                    fout.write(fin.read())
+        print(f"Final peptide FASTA written (concatenated): {final_pep}")
+    else:
+        print("No peptide FASTA input provided; skipping peptide processing.")
 
-    # If mitos FASTA is provided, update mitochondrial peptide sequences.
-    if args.mitos:
-        update_mitos_pep(pep_fa, args.mitos)
-
-    # Clean up temporary files.
-    for f in [intron_bed, gene_bed, trans_bed, cds_fa_temp, pep_fa_temp]:
+    # Clean up temporary BED files and the temporary GTF file.
+    for f in [intron_bed, gene_bed, trans_bed]:
         if os.path.exists(f):
             os.remove(f)
-    print("Temporary BED and intermediate FASTA files removed.")
+    print("Temporary BED files removed.")
+    if os.path.exists(gtf_generated):
+        os.remove(gtf_generated)
+        print(f"Removed temporary GTF file: {gtf_generated}")
 
     # Move output files into MOLAS input directory.
-    output_dir = f"./{prefix}_MOLAS_input/FASTA/"
+    output_dir = f"./{file_prefix}_MOLAS_input/FASTA/"
     os.makedirs(output_dir, exist_ok=True)
     files_to_move = [
         output_intron_lowercase_genome,
         output_intron_lowercase_genome + ".fai",
-        gene_fa, trans_fa, cds_fa, pep_fa, aa_fa
+        gene_fa, trans_fa, cds_fa, pep_fa_final
     ]
     for f in files_to_move:
         if os.path.exists(f):
             shutil.move(f, os.path.join(output_dir, os.path.basename(f)))
     print(f"Moved output files to {output_dir}")
-
-    # Remove the temporary GTF file.
-    if os.path.exists(gtf_generated):
-        os.remove(gtf_generated)
-        print(f"Removed temporary GTF file: {gtf_generated}")
 
 if __name__ == "__main__":
     main()
