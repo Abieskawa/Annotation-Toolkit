@@ -7,12 +7,12 @@ import re
 import shutil
 
 def usage():
-    print("Usage: {} -g <input_genome> -r <input_gff> -p <prefix> -a <annotator> [-v]".format(sys.argv[0]))
+    print("Usage: {} -g <input_genome> -r <input_gff> -p <prefix> -a <annotator> [-v] [--mitos <mitos_fasta>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
     """Run a command and exit if it fails."""
-    print("Running: " + " ".join(cmd) if not shell else cmd)
+    print("Running: " + (" ".join(cmd) if not shell else cmd))
     result = subprocess.run(cmd, shell=shell)
     if result.returncode != 0:
         print("Error running command: ", cmd, file=sys.stderr)
@@ -38,7 +38,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                        #   "parent_gene": gene id,
                        #   "exons": list of (start, end),
                        #   "introns": list of (start, end)
-    # Removed gene_exons since exon-level records directly attached to genes are unlikely.
     warned_genes = set()  # Track genes for which a warning has already been printed
 
     with open(gff_file) as fin:
@@ -49,8 +48,11 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
             if len(parts) < 9:
                 continue
             chrom, source, ftype, start, end, score, strand, phase, attr = parts
-            start = int(start)
-            end = int(end)
+            try:
+                start = int(start)
+                end = int(end)
+            except ValueError:
+                continue
             # Parse attributes (assumes key=value; format)
             attributes = {}
             for a in attr.split(";"):
@@ -74,7 +76,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                     if parent in transcripts:
                         transcripts[parent]["exons"].append((start, end))
                     elif parent in genes:
-                        # Warn once per gene and ignore storing these exons.
                         if parent not in warned_genes:
                             print(f"WARNING: Exon-level record directly attached to gene {parent} encountered. Ignoring.", file=sys.stderr)
                             warned_genes.add(parent)
@@ -87,7 +88,7 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                 if parent:
                     transcripts.setdefault(parent, {"transcript": None, "exons": [], "introns": []})
                     transcripts[parent]["introns"].append((start, end))
-            # Transcript-level records: no limitation on type
+            # Transcript-level records.
             elif ("Parent" in attributes or "gene_id" in attributes) and attributes.get("ID"):
                 transcript_id = attributes.get("ID")
                 parent_gene = attributes.get("Parent") or attributes.get("gene_id")
@@ -108,7 +109,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
 
     if verbose:
         for gene_id, gene_data in genes.items():
-            # Only count exons from transcript-level records.
             total_exons = 0
             for t in valid_transcripts.values():
                 if t.get("parent_gene") == gene_id:
@@ -124,7 +124,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                 for transcript_id, t in valid_transcripts.items():
                     if t["transcript"] is None:
                         continue
-                    # Use transcript record boundaries directly without merging exons.
                     chrom, tstart, tend, strand, t_attr = t["transcript"]
                     bed_start = tstart - 1 if adjust_start else tstart
                     line_out = f"{chrom}\t{bed_start}\t{tend}\t{transcript_id}\t.\t{strand}"
@@ -145,28 +144,97 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                             fout.write(line_out + "\n")
             elif feat_lower == "gene":
                 for gene_id, gene_data in genes.items():
-                    combined_exons = []  # No direct gene_exon storage used.
+                    combined_exons = []
                     for t in valid_transcripts.values():
                         if t.get("parent_gene") == gene_id:
                             combined_exons.extend(t["exons"])
                     if not combined_exons:
                         continue
-                    
                     chrom, gstart, gend, strand, gene_attr = gene_data
                     bed_start = gstart - 1 if adjust_start else gstart
                     line_out = f"{chrom}\t{bed_start}\t{gend}\t{gene_id}\t.\t{strand}"
                     fout.write(line_out + "\n")
     return
 
+def update_mitos_pep(pep_file, mitos_file):
+    """
+    For records in the pep_file whose headers contain "_MT_transcript_",
+    remove everything before and including "_MT_transcript_" to obtain the gene name (in lowercase).
+    Look up that gene name in the mitos_file FASTA; if found, replace the sequence with the mitos sequence
+    (after removing any trailing "*" if present).
+    """
+    # Parse the mitos FASTA into a dictionary: key = gene name (lowercase), value = sequence.
+    mitos_dict = {}
+    current_header = None
+    current_seq = []
+    with open(mitos_file) as fin:
+        for line in fin:
+            line = line.strip()
+            if line.startswith(">"):
+                if current_header is not None:
+                    seq = "".join(current_seq)
+                    seq = seq.rstrip("*")  # remove trailing "*" if any
+                    gene = current_header[1:].split(";")[-1].strip().lower()
+                    mitos_dict[gene] = seq
+                current_header = line
+                current_seq = []
+            else:
+                current_seq.append(line)
+        if current_header is not None:
+            seq = "".join(current_seq)
+            seq = seq.rstrip("*")
+            gene = current_header[1:].split(";")[-1].strip().lower()
+            mitos_dict[gene] = seq
+
+    # Process the pep_file.
+    records = []
+    with open(pep_file) as fin:
+        header = None
+        seq_lines = []
+        for line in fin:
+            if line.startswith(">"):
+                if header:
+                    records.append((header, "".join(seq_lines)))
+                header = line.strip()
+                seq_lines = []
+            else:
+                seq_lines.append(line.strip())
+        if header:
+            records.append((header, "".join(seq_lines)))
+
+    # Update records if header contains "_transcript_"
+    updated_records = []
+    search_str = "_transcript_"
+    for header, seq in records:
+        if search_str in header:
+            # Extract gene name as the part after the search string.
+            gene_name = header.split(search_str)[-1].strip().lower()
+            if gene_name in mitos_dict:
+                new_seq = mitos_dict[gene_name]
+                updated_records.append((header, new_seq))
+                print(f"Updated {header} with mitos sequence for gene {gene_name}.")
+            else:
+                print(f"WARNING: No mitos sequence found for gene {gene_name}. Keeping original.", file=sys.stderr)
+                updated_records.append((header, seq))
+        else:
+            updated_records.append((header, seq))
+    
+    # Write updated records back to the pep_file.
+    with open(pep_file, "w") as fout:
+        for rec in updated_records:
+            fout.write(f"{rec[0]}\n{rec[1]}\n")
+    print(f"Mitos peptide update completed for {pep_file}.")
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Pipeline using a GFF input (converted to GTF) to generate BED/FASTA outputs at gene and transcript levels"
+        description="Pipeline using a GFF input (converted to GTF) to generate BED/FASTA outputs at gene, intron, and transcript levels"
     )
     parser.add_argument("-g", "--genome", required=True, help="Input genome file")
     parser.add_argument("-r", "--gff", required=True, help="Input GFF file")
     parser.add_argument("-p", "--prefix", required=True, help="Prefix for output files")
     parser.add_argument("-a", "--annotator", required=True, help="Annotator name (e.g. braker3)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output")
+    parser.add_argument("--mitos", help="Optional mitos peptide FASTA file with correct mitochondrial sequences", default=None)
     args = parser.parse_args()
 
     input_genome = args.genome
@@ -285,6 +353,10 @@ def main():
     with open(pep_fa, "w") as fout:
         fout.write(content)
     print(f"Peptide file renamed to: {pep_fa}")
+
+    # If mitos FASTA is provided, update mitochondrial peptide sequences.
+    if args.mitos:
+        update_mitos_pep(pep_fa, args.mitos)
 
     # Clean up temporary files.
     for f in [intron_bed, gene_bed, trans_bed, cds_fa_temp, pep_fa_temp]:
