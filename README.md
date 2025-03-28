@@ -56,11 +56,19 @@ nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito
 #Run repeat masking again with TRF
 nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome_keep_nuclear_mito.fasta.masked -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
 ```
+The generated table can sometimes hard to interpret. As a result, user can summarize by themselves.
+```
+#buildSummary.pl is already built inside the tetools docker.
+buildSummary.pl -genome RepeatCount.tsv beltfish_genome_1.fasta.out > repeat_report_nuclear24.txt
+python scripts/summarize_buildSummary.py repeat_report_nuclear24.txt
+```
 # Structural Annotation 
 ## Run mitochondria Annotation with mitos
+NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi) 
+Ex. fish genetic code: 2, asian hard clam genetic code: 5
 Version: runmitos.py 2.1.9
 ```
-runmitos.py -i 00_annotation_start_genome/MTW_genome_clean_mitochondria.fasta -c 5 -R ../MITOS2-refdata/ -r ../MITOS2-refdata/refseq89m -o 06_mitos/ --debug --best
+runmitos.py -i 04_SplitMitoNuclear/beltfish_genome_mito_reconstruct.fasta -c 2 -R ../MITOS2-refdata/ -r refseq89m -o 06_mitos/ --best --debug
 ```
 
 ## Run ncRNA Annotation
@@ -99,7 +107,20 @@ me_clean_nuclear.combined.masked -p ../braker3_protein_evidence/odbv12v0_Mollusc
 06_braker3_v3/ -b 05_RNA_mapping_star_2pass_MTW/ -l mollusca_odb10  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
 ```
 
+## Preprocess the output before running functional annotation
+```
+python ../Annotation-Toolkit/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
+
+gffread -T 07_merge_gff/merged_fix.gff -o 07_merge_gff/merged_fix_tran.gtf
+
+python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r 07_merge_gff/merged_fix_tran.gtf -p beltfish_v2 -a combined
+
+#-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
+nohup python ../Annotation-Toolkit/eva_annotation.py psa -g 07_merge_gff/merged_fix.gff -f 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -b beltfish_v2 -o beltfish_v2 -p 07_renamed_braker3/braker_renamed.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output > run_eva_combined.log 2>&1 &
+```
+
 ## Run gtf2gff
+Remember to make everything 777 or any similar allow BUSCO docker to access the data.
 ```
 sudo chmod 777 {wd}
 perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --gff3
@@ -107,6 +128,7 @@ perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --gff3
 
 ## Run evaluation of Braker annotation 
 In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the regulation of gff file version is different version, please check my source code before applying my source code. 
+User can also evaluate the renamed gff instead.
 ```
 nohup python ../Annotation-Toolkit/eva_annotation.py psa -g 06_braker3_v3/braker.gff -f 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta -b asian_hard_clam_v3 -o 06_braker3_v3 -p 06_braker3_v3/braker.aa --busco_lineage mollusca_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/asian_hard_clam/ --omark_dir omark_omamer_output > run_eva_braker3_v3.log 2>&1 &
 ```
@@ -115,13 +137,18 @@ Rename the output with specified prefix (prefix_{entry name}) and rename protein
 ```
 python ../Annotation-Toolkit/rename_gtf.py --gtf 06_braker3_v3/braker.gtf --prefix M_tai --out 07_renamed_braker3_v3/braker_renamed.gtf
 
-perl ../Annotation-Toolkit/gtf2gff.pl <braker_renamed.gtf --out=braker_renamed.gff --printExon --printUTR --gff3
-
-python ../../Annotation-Toolkit/rename_protein_cds.py ../06_braker3_v3/braker.aa braker_renamed.aa M_tai
-
-python ../../Annotation-Toolkit/remove_protein_star.py -I braker_renamed.aa -O braker_renamed_wout_asterisk.aa -L remove_star.log
+perl ../Annotation-Toolkit/gtf2gff.pl <braker_renamed.gtf --out=braker_renamed.gff --printExon --printUTR --printIntron --gff3
 ```
 
+## Merge the structural annotation result
+```
+python ../Annotation-Toolkit/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
+```
+
+## Generate MOLAS input fasta and reproduce protein fasta file
+```
+python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r 07_merge_gff/merged_fix.gff -p 08_beltfish_v2 -a combined -v
+```
 
 ## Prepare NR protein database
 ### Downolad NR DB
@@ -141,7 +168,9 @@ nohup diamond makedb --in nr/nr.000-125.fasta --threads 128 -d diamond_nr/nr.000
 ```
 ### Run Diamond blastp NR
 ```
-nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q ../07_braker3_v7_renamed/braker_renamed_wout_asterisk.aa -d ~/output/diamond_nr/nr.000-125.dmnd -o marine_tilapia_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> time_output.log > /dev/null &
+nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_beltfish_v2_MOLAS_input/FASTA/beltfish_v2_combined_pep.fa -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nulcear/beltfish_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
+
+python ../Annotation-Toolkit/eva_annotation.py diamond-nr -p 07_renamed_braker3/braker_renamed.aa -d 10_diamond_blastp/beltfish_diamond.tsv -o 10_diamond_blastp/beltfish_v2
 ```
 
 ## Run DeepTMHMM
@@ -152,6 +181,7 @@ nohup python ../run_deeptmhmm.py 07_braker3_v7_renamed/braker_renamed_wout_aster
 
 ## Download KAAS result
 Note that it can take days(~2) to download, please stay calm and be patient.
+*plesae check the download.log, sometimes there are error, and it give up downloading that entry!*
 ```
 nohup python3 ../../Annotation-Toolkit/downloadkaas.py "https://www.genome.jp/kaas-bin/kaas_main?mode=user&id=1739414180&key=9Ze6Wzzp" > download.log 2>&1 &
 ```
@@ -167,3 +197,5 @@ python ../Annotation-Toolkit/eva_annotation.py interpro -p 07_renamed_braker3_v3
 #Extract the info MOLAS ask for
 python ../../Annotation-Toolkit/interproscan_extract.py -in interproscan_result.tsv -p marine_tilapia
 ``` 
+
+## Draw Circos plot
