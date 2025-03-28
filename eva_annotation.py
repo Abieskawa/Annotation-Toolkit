@@ -30,25 +30,13 @@ def parse_attributes(attr_str):
 # -----------------------------------------------------------------------
 def ensure_unique_entries(df, entry_type):
     """
-    Checks the DataFrame for duplicate IDs and aggregates entries if necessary.
-    Returns a tuple: (modified DataFrame, warning message string).
+    Checks the DataFrame for duplicate IDs, reports them,
+    and returns the original DataFrame without aggregation.
     """
     dup = df[df['ID'].duplicated(keep=False)]
     warning_msg = ""
     if not dup.empty:
         warning_msg = f"Warning: Duplicate {entry_type} IDs found: {dup['ID'].unique().tolist()}\n"
-        df = df.groupby('ID', as_index=False).agg({
-            'seqid': 'first',
-            'source': 'first',
-            'type': 'first',
-            'start': 'min',
-            'end': 'max',
-            'score': 'first',
-            'strand': 'first',
-            'phase': 'first',
-            'attributes': 'first',
-            'parsed_attrs': 'first'
-        })
     return df, warning_msg
 
 # -----------------------------------------------------------------------
