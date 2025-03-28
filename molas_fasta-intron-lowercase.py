@@ -18,45 +18,28 @@ def run_command(cmd, shell=False):
         print("Error running command: ", cmd, file=sys.stderr)
         sys.exit(result.returncode)
 
-def merge_intervals(intervals):
+def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbose=False):
     """
-    Given a list of intervals (start, end), merge overlapping intervals.
-    Returns a new list of intervals (tuples) sorted by start.
-    """
-    if not intervals:
-        return []
-    sorted_intervals = sorted(intervals, key=lambda x: x[0])
-    merged = [sorted_intervals[0]]
-    for current in sorted_intervals[1:]:
-        last = merged[-1]
-        if current[0] <= last[1]:
-            merged[-1] = (last[0], max(last[1], current[1]))
-        else:
-            merged.append(current)
-    return merged
-
-def extract_bed_from_gff(gff_file, feature, bed_file, adjust_start=True, verbose=False):
-    """
-    Build a hierarchy of gene/transcript/exon/intron from the GFF file and output BED entries.
-    This function is used only for transcript-level BED generation since it requires
-    assembling exons into transcripts.
+    Build a hierarchy of gene/transcript/exon/intron from the GFF file and output BED entries
+    for the specified features in one pass.
     
-    Hierarchy details:
-      - Gene-level records (types "gene" or "ncrna_gene") are saved.
-      - Exon-level records (exon, CDS, UTR) are collected and linked via Parent.
-      - Intron-level records are also collected.
-      - Any record (not gene, exon, CDS, UTR, intron) that has a Parent attribute is treated as transcript.
-      
-    Only transcripts whose parent gene exists are kept. BED entries for transcripts are produced
-    by merging their exon intervals.
+    Features can include: "gene", "intron", "transcript".
+    
+    For transcript-level BED, the transcript boundaries are taken directly from the transcript record,
+    without merging exon intervals.
     """
+    # Ensure features is a list
+    if isinstance(features, str):
+        features = [features]
+        
     genes = {}         # key: gene id, value: (chrom, start, end, strand, attr)
     transcripts = {}   # key: transcript id, value: dict with keys:
                        #   "transcript": (chrom, start, end, strand, attr),
                        #   "parent_gene": gene id,
                        #   "exons": list of (start, end),
                        #   "introns": list of (start, end)
-    gene_exons = {}    # For exon-level records directly attached to a gene
+    # Removed gene_exons since exon-level records directly attached to genes are unlikely.
+    warned_genes = set()  # Track genes for which a warning has already been printed
 
     with open(gff_file) as fin:
         for line in fin:
@@ -80,18 +63,21 @@ def extract_bed_from_gff(gff_file, feature, bed_file, adjust_start=True, verbose
 
             ftype_low = ftype.lower()
             # Gene-level records.
-            if ftype_low in ["gene", "ncrna_gene"]:
+            if ftype_low in ["gene"]:
                 gene_id = attributes.get("ID") or attributes.get("gene_id")
                 if gene_id:
                     genes[gene_id] = (chrom, start, end, strand, attr)
-            # Exon-level records.
-            elif ftype_low in ["exon", "cds", "utr"]:
+            # Exon-level records (including CDS, UTR, start_codon, stop_codon).
+            elif ftype_low in ["exon", "cds", "utr", "start_codon", "stop_codon"]:
                 parent = attributes.get("Parent")
                 if parent:
                     if parent in transcripts:
                         transcripts[parent]["exons"].append((start, end))
                     elif parent in genes:
-                        gene_exons.setdefault(parent, []).append((start, end))
+                        # Warn once per gene and ignore storing these exons.
+                        if parent not in warned_genes:
+                            print(f"WARNING: Exon-level record directly attached to gene {parent} encountered. Ignoring.", file=sys.stderr)
+                            warned_genes.add(parent)
                     else:
                         transcripts.setdefault(parent, {"transcript": None, "exons": [], "introns": []})
                         transcripts[parent]["exons"].append((start, end))
@@ -109,97 +95,67 @@ def extract_bed_from_gff(gff_file, feature, bed_file, adjust_start=True, verbose
                 transcripts[transcript_id]["transcript"] = (chrom, start, end, strand, attr)
                 transcripts[transcript_id]["parent_gene"] = parent_gene
 
-    # Filter transcripts: keep only those whose parent gene exists in genes.
-    valid_transcripts = {tid: t for tid, t in transcripts.items() 
-                         if ("parent_gene" in t and t["parent_gene"] in genes) or (tid in genes)}
+    # Filter transcripts: only keep those with a valid parent gene.
+    valid_transcripts = {}
+    for tid, t in transcripts.items():
+        if "parent_gene" in t:
+            if t["parent_gene"] in genes:
+                valid_transcripts[tid] = t
+            else:
+                print(f"WARNING: Transcript {tid} has parent_gene {t['parent_gene']} that is not found in genes. Skipping.", file=sys.stderr)
+        else:
+            print(f"WARNING: Transcript {tid} does not have a parent_gene attribute. Skipping.", file=sys.stderr)
 
     if verbose:
         for gene_id, gene_data in genes.items():
-            total_exons = len(gene_exons.get(gene_id, []))
+            # Only count exons from transcript-level records.
+            total_exons = 0
             for t in valid_transcripts.values():
                 if t.get("parent_gene") == gene_id:
                     total_exons += len(t["exons"])
             if total_exons == 0:
                 print(f"DEBUG: Gene {gene_id} has a gene record but no exon-level data.")
 
-    with open(bed_file, "w") as fout:
-        if feature.lower() == "transcript":
-            for transcript_id, t in valid_transcripts.items():
-                if t["transcript"] is None or len(t["exons"]) == 0:
-                    continue
-                merged_exons = merge_intervals(t["exons"])
-                tx_start = min(interval[0] for interval in merged_exons)
-                tx_end = max(interval[1] for interval in merged_exons)
-                chrom, tstart, tend, strand, t_attr = t["transcript"]
-                bed_start = tx_start - 1 if adjust_start else tx_start
-                line_out = f"{chrom}\t{bed_start}\t{tx_end}\t{transcript_id}\t.\t{strand}"
-                fout.write(line_out + "\n")
-        elif feature.lower() == "intron":
-            # Although intron extraction can be done directly, here we use the hierarchy if available.
-            for transcript_id, t in valid_transcripts.items():
-                if t.get("introns") and len(t["introns"]) > 0:
-                    sorted_introns = sorted(t["introns"], key=lambda x: x[0])
-                    for i, (istart, iend) in enumerate(sorted_introns):
-                        if t["transcript"]:
-                            chrom = t["transcript"][0]
-                            strand = t["transcript"][3]
-                        else:
-                            parent_gene = t.get("parent_gene")
-                            chrom, _, _, strand, _ = genes[parent_gene]
-                        bed_start = istart - 1 if adjust_start else istart
-                        line_out = f"{chrom}\t{bed_start}\t{iend}\t{transcript_id}_intron{i+1}\t.\t{strand}"
-                        fout.write(line_out + "\n")
-        elif feature.lower() == "gene":
-            for gene_id, gene_data in genes.items():
-                combined_exons = list(gene_exons.get(gene_id, []))
-                for t in valid_transcripts.values():
-                    if t.get("parent_gene") == gene_id:
-                        combined_exons.extend(t["exons"])
-                if not combined_exons:
-                    continue
-                merged_exons = merge_intervals(combined_exons)
-                chrom, gstart, gend, strand, gene_attr = gene_data
-                bed_start = gstart - 1 if adjust_start else gstart
-                line_out = f"{chrom}\t{bed_start}\t{gend}\t{gene_id}\t.\t{strand}"
-                fout.write(line_out + "\n")
-    return
-
-def extract_bed_direct(gff_file, feature, bed_file, adjust_start=True):
-    """
-    Directly extract BED lines for features that do not require hierarchy building.
-    For example, for gene and intron, simply scan the GFF file and output the corresponding lines.
-    """
-    with open(gff_file) as fin, open(bed_file, "w") as fout:
-        for line in fin:
-            if line.startswith("#"):
-                continue
-            parts = line.strip().split("\t")
-            if len(parts) < 9:
-                continue
-            chrom, source, ftype, start, end, score, strand, phase, attr = parts
-            ftype_low = ftype.lower()
-            if feature.lower() == "gene":
-                if ftype_low not in ["gene", "ncrna_gene"]:
-                    continue
-            elif feature.lower() == "intron":
-                if ftype_low != "intron":
-                    continue
-            else:
-                continue  # only handle gene and intron here
-            start = int(start)
-            end = int(end)
-            bed_start = start - 1 if adjust_start else start
-            # Parse attributes for an ID.
-            attributes = {}
-            for a in attr.split(";"):
-                a = a.strip()
-                if not a:
-                    continue
-                if "=" in a:
-                    key, value = a.split("=", 1)
-                    attributes[key] = value
-            feature_id = attributes.get("ID", ".")
-            fout.write(f"{chrom}\t{bed_start}\t{end}\t{feature_id}\t.\t{strand}\n")
+    # For each requested feature, write to its corresponding BED file.
+    for feat in features:
+        feat_lower = feat.lower()
+        with open(bed_files[feat_lower], "w") as fout:
+            if feat_lower == "transcript":
+                for transcript_id, t in valid_transcripts.items():
+                    if t["transcript"] is None:
+                        continue
+                    # Use transcript record boundaries directly without merging exons.
+                    chrom, tstart, tend, strand, t_attr = t["transcript"]
+                    bed_start = tstart - 1 if adjust_start else tstart
+                    line_out = f"{chrom}\t{bed_start}\t{tend}\t{transcript_id}\t.\t{strand}"
+                    fout.write(line_out + "\n")
+            elif feat_lower == "intron":
+                for transcript_id, t in valid_transcripts.items():
+                    if t.get("introns") and len(t["introns"]) > 0:
+                        sorted_introns = sorted(t["introns"], key=lambda x: x[0])
+                        for i, (istart, iend) in enumerate(sorted_introns):
+                            if t["transcript"]:
+                                chrom = t["transcript"][0]
+                                strand = t["transcript"][3]
+                            else:
+                                parent_gene = t.get("parent_gene")
+                                chrom, _, _, strand, _ = genes[parent_gene]
+                            bed_start = istart - 1 if adjust_start else istart
+                            line_out = f"{chrom}\t{bed_start}\t{iend}\t{transcript_id}_intron{i+1}\t.\t{strand}"
+                            fout.write(line_out + "\n")
+            elif feat_lower == "gene":
+                for gene_id, gene_data in genes.items():
+                    combined_exons = []  # No direct gene_exon storage used.
+                    for t in valid_transcripts.values():
+                        if t.get("parent_gene") == gene_id:
+                            combined_exons.extend(t["exons"])
+                    if not combined_exons:
+                        continue
+                    
+                    chrom, gstart, gend, strand, gene_attr = gene_data
+                    bed_start = gstart - 1 if adjust_start else gstart
+                    line_out = f"{chrom}\t{bed_start}\t{gend}\t{gene_id}\t.\t{strand}"
+                    fout.write(line_out + "\n")
     return
 
 def main():
@@ -242,14 +198,16 @@ def main():
     # For BED extractions, we work with the original GFF.
     # -----------------------------------------------------
 
-    # Generate BED files.
-    # For gene and intron features, we extract directly to save time.
-    extract_bed_direct(input_gff, "intron", intron_bed, adjust_start=True)
+    # Generate BED files for intron, gene, and transcript in one pass.
+    bed_files = {
+        "intron": intron_bed,
+        "gene": gene_bed,
+        "transcript": trans_bed
+    }
+    features = ["intron", "gene", "transcript"]
+    extract_bed_from_gff(input_gff, features, bed_files, adjust_start=True, verbose=verbose)
     print(f"Intron BED file written: {intron_bed}")
-    extract_bed_direct(input_gff, "gene", gene_bed, adjust_start=True)
     print(f"Gene BED file written: {gene_bed}")
-    # For transcript, we need the heavy hierarchy build.
-    extract_bed_from_gff(input_gff, "transcript", trans_bed, adjust_start=True, verbose=verbose)
     print(f"Transcript BED file written: {trans_bed}")
 
     # Use bedtools maskfasta to soft-mask the genome using the intron BED file.
