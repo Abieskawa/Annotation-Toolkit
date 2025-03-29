@@ -165,15 +165,16 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
       - For each record, assume the header is in the format:
             >MT; 487-1453; +; nad1
         and extract the gene name from the last semicolon-delimited field.
-      - If the header already starts with header_prefix+"_transcript_", leave it unchanged.
+      - If the header already starts with header_prefix+"_gene_", leave it unchanged.
       - Otherwise, write a new header as:
-            >{header_prefix}_transcript_{gene}
+            >{header_prefix}_gene_{gene}.p
     
     For braker input (pep_type == "braker"):
       - Remove any trailing "*" from sequences.
       - If the header already starts with header_prefix+"_", leave it unchanged.
       - Otherwise, change the header to:
-            >{header_prefix}_{original_header_without '>'}
+            >{header_prefix}_{original_header_without '>'} 
+        with the substitution of '.t' to '.p' in the original header.
     """
     records = []
     with open(pep_in) as fin:
@@ -191,7 +192,7 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
             records.append((header, "".join(seq_lines)))
     updated_records = []
     if pep_type == "mitos":
-        expected_prefix = f"{header_prefix}_transcript_"
+        expected_prefix = f"{header_prefix}_gene_"
         for header, seq in records:
             seq = seq.rstrip("*")
             if header.startswith(">" + expected_prefix):
@@ -200,7 +201,7 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
                 # Assume header format: ">MT; 487-1453; +; nad1"
                 parts = header[1:].split(";")
                 gene = parts[-1].strip().lower()
-                new_header = f">{expected_prefix}{gene}"
+                new_header = f">{expected_prefix}{gene}.p"
                 updated_records.append((new_header, seq))
         print("Processed mitos peptide input.")
     elif pep_type == "braker":
@@ -210,7 +211,8 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
             if header.startswith(">" + expected_prefix):
                 updated_records.append((header, seq))
             else:
-                new_header = f">{expected_prefix}{header[1:].strip()}"
+                # Replace '.t' with '.p' in the original header (after removing the '>')
+                new_header = f">{expected_prefix}{header[1:].strip().replace('.t', '.p')}"
                 updated_records.append((new_header, seq))
         print("Processed braker peptide input.")
     else:
@@ -361,7 +363,11 @@ def main():
         print("No peptide FASTA input provided; skipping peptide processing.")
 
     # Clean up temporary BED files and the temporary GTF file.
-    for f in [intron_bed, gene_bed, trans_bed, processed_pep_files, cds_fa_temp]:
+    for f in [intron_bed, gene_bed, trans_bed, cds_fa_temp]:
+        if os.path.exists(f):
+            os.remove(f)
+    # Clean up processed peptide files individually.
+    for f in processed_pep_files:
         if os.path.exists(f):
             os.remove(f)
     print("Temporary BED files removed.")
@@ -375,7 +381,7 @@ def main():
     files_to_move = [
         output_intron_lowercase_genome,
         output_intron_lowercase_genome + ".fai",
-        gene_fa, trans_fa, cds_fa, pep_fa_final
+        gene_fa, trans_fa, cds_fa, pep_fa_final]
     for f in files_to_move:
         if os.path.exists(f):
             shutil.move(f, os.path.join(output_dir, os.path.basename(f)))
