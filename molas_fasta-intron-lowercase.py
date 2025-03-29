@@ -376,7 +376,7 @@ def main():
     files_to_move = [
         output_intron_lowercase_genome,
         output_intron_lowercase_genome + ".fai",
-        gene_fa, trans_fa, cds_fa, pep_fa_final
+        gene_fa, trans_fa, cds_fa, pep_fa_final, processed_pep_files
     ]
     for f in files_to_move:
         if os.path.exists(f):
