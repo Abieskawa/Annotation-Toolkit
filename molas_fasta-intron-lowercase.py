@@ -7,7 +7,7 @@ import re
 import shutil
 
 def usage():
-    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>]".format(sys.argv[0]))
+    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [-d <outputdir>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
@@ -235,6 +235,7 @@ def main():
     parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
     parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
     parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
+    parser.add_argument("-d", "--outputdir", help="Specify the output directory name (default: MOLAS_input)", default="MOLAS_input")
     args = parser.parse_args()
 
     input_genome = args.genome
@@ -375,8 +376,8 @@ def main():
         os.remove(gtf_generated)
         print(f"Removed temporary GTF file: {gtf_generated}")
 
-    # Move output files into MOLAS input directory.
-    output_dir = f"./{file_prefix}_MOLAS_input/FASTA/"
+    # Move output files into user-specified output directory.
+    output_dir = f"./{args.outputdir}/FASTA/"
     os.makedirs(output_dir, exist_ok=True)
     files_to_move = [
         output_intron_lowercase_genome,
