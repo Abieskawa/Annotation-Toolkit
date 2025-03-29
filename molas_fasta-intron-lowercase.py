@@ -251,7 +251,6 @@ def main():
     trans_fa = f"{file_prefix}_{annotator}_trans.fa"
     cds_fa_temp = f"{file_prefix}_{annotator}_CDS_70.fa"
     pep_fa_final = f"{file_prefix}_{annotator}_pep.fa"
-    # (CDS output is preserved.)
 
     # -----------------------------------------------------
     # Generate a GTF file from the input GFF using gffread.
@@ -362,7 +361,7 @@ def main():
         print("No peptide FASTA input provided; skipping peptide processing.")
 
     # Clean up temporary BED files and the temporary GTF file.
-    for f in [intron_bed, gene_bed, trans_bed]:
+    for f in [intron_bed, gene_bed, trans_bed, processed_pep_files, cds_fa_temp]:
         if os.path.exists(f):
             os.remove(f)
     print("Temporary BED files removed.")
@@ -376,8 +375,7 @@ def main():
     files_to_move = [
         output_intron_lowercase_genome,
         output_intron_lowercase_genome + ".fai",
-        gene_fa, trans_fa, cds_fa, pep_fa_final, processed_pep_files
-    ]
+        gene_fa, trans_fa, cds_fa, pep_fa_final
     for f in files_to_move:
         if os.path.exists(f):
             shutil.move(f, os.path.join(output_dir, os.path.basename(f)))
