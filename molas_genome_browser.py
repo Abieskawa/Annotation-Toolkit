@@ -233,7 +233,19 @@ def create_bigbed(prefix, tools_dir):
     return output_bb
 
 def organize_files(prefix, outdir):
-    # Determine base output directory. If outdir is provided, use it; otherwise, use current directory.
+    """
+    Organize output to mimic this structure:
+    
+    <OUTDIR>/
+    ├── genome_browser/
+    │     ├── <prefix>_bgp-NR-CDS.bb
+    │     └── intermediated_file/
+    │             ├── <prefix>_bgp.bed
+    │             ├── <prefix>_bgp-NR-CDS.bed
+    │             ├── <prefix>_genePred.gp
+    │             └── <prefix>_genome.2bit
+    └── (other folders such as FASTA remain as they are)
+    """
     if outdir:
         base_dir = os.path.abspath(outdir)
         if not os.path.exists(base_dir):
@@ -241,23 +253,24 @@ def organize_files(prefix, outdir):
     else:
         base_dir = os.getcwd()
     
-    # Create the directory structure under base_dir.
-    browser_input_dir = os.path.join(base_dir, f"{prefix}_MOLAS_input", "genome_browser")
-    intermediate_dir = os.path.join(browser_input_dir, "intermediated_file")
-    os.makedirs(intermediate_dir, exist_ok=True)
+    # Create subdirectory "genome_browser" inside base_dir.
+    genome_browser_dir = os.path.join(base_dir, "genome_browser")
+    intermediated_file_dir = os.path.join(genome_browser_dir, "intermediated_file")
+    os.makedirs(genome_browser_dir, exist_ok=True)
+    os.makedirs(intermediated_file_dir, exist_ok=True)
     
     # Remove temporary files.
     for f in [f"{prefix}_bgp-NR.bed", f"{prefix}_extracted-gp.tsv"]:
         if os.path.exists(f):
             os.remove(f)
-    # Move intermediate files.
+    # Move intermediate files to intermediated_file_dir.
     for f in [f"{prefix}_genome.2bit", f"{prefix}_genePred.gp", f"{prefix}_bgp.bed", f"{prefix}_bgp-NR-CDS.bed"]:
         if os.path.exists(f):
-            shutil.move(f, intermediate_dir)
-    # Move the BigBed file.
+            shutil.move(f, intermediated_file_dir)
+    # Move the BigBed file to genome_browser_dir.
     bb_file = f"{prefix}_bgp-NR-CDS.bb"
     if os.path.exists(bb_file):
-        shutil.move(bb_file, browser_input_dir)
+        shutil.move(bb_file, genome_browser_dir)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -268,7 +281,7 @@ def main():
     parser.add_argument("-r", required=True, metavar="GFF3", 
                         help="Input GFF3 file (e.g., annotation.gff3)")
     parser.add_argument("-p", required=True, metavar="PREFIX", 
-                        help="Prefix for output files (e.g., FT2.1)")
+                        help="Prefix for output files (e.g., beltfish_v2)")
     parser.add_argument("-n", required=True, metavar="NR_ANNOT", 
                         help="NR annotation file in TSV format")
     parser.add_argument("--tools_dir", default=None, metavar="TOOLS_DIR",
