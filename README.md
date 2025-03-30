@@ -40,7 +40,7 @@ cat MTW_genome.fasta | python3 {the path of this directory}/fcs.py clean genome 
 
 ## (Optional) Check which scaffold is mitochondria genome
 ```
-mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges}
+mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges}
 ```
 
 ## (Optional) If one wants to extract mitochondria and nucleus chromosomes (Longest)
@@ -180,7 +180,7 @@ nohup python ../run_deeptmhmm.py 07_braker3_v7_renamed/braker_renamed_wout_aster
 ```
 
 ## Download KAAS result
-Note that it can take days(~2) to download, please stay calm and be patient.
+Note that it can take days(~2 days) to download, please stay calm and be patient.
 *plesae check the download.log, sometimes there are error, and it give up downloading that entry!*
 ```
 nohup python3 ../../Annotation-Toolkit/downloadkaas.py "https://www.genome.jp/kaas-bin/kaas_main?mode=user&id=1739414180&key=9Ze6Wzzp" > download.log 2>&1 &
@@ -197,5 +197,16 @@ python ../Annotation-Toolkit/eva_annotation.py interpro -p 07_renamed_braker3_v3
 #Extract the info MOLAS ask for
 python ../../Annotation-Toolkit/interproscan_extract.py -in interproscan_result.tsv -p marine_tilapia
 ``` 
-
+## Upload to MOLAS genome browser
+``` 
+python ../Annotation-Toolkit/molas_genome_browser.py -g ../04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r ../07_merge_gff/merged_fix.gff -p beltfish_v2 -n ../11_diamond_blastp_mito_nulcear/beltfish_diamond.tsv
+``` 
 ## Draw Circos plot
+```
+python ../../Annotation-Toolkit/gff2circos.py --input ../07_merge_gff/merg
+ed_fix.gff --out gene_w100000.hist.txt --window 100000 --biotype protein_coding --genome_fasta ../04_SplitMitoNuclear/beltfish_genome_1_nuclear.fasta --seqids circos_target_seq.txt
+
+python scripts/repeatout2circos.py {RepeatMasker Output, ex.beltfish_genome_1.fasta.out} 17_circos/repeat_dna_w100000.hist.txt --targets {a one-column txt} --window 100000 --pattern DNA --fasta beltfish_genome_1.fasta
+
+docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -outputdir /data
+```
