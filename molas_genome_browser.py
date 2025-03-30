@@ -232,9 +232,20 @@ def create_bigbed(prefix, tools_dir):
     run_cmd(cmd)
     return output_bb
 
-def organize_files(prefix):
-    output_dir = f"{prefix}_MOLAS_input/genome_browser/intermediated_file/"
-    os.makedirs(output_dir, exist_ok=True)
+def organize_files(prefix, outdir):
+    # Determine base output directory. If outdir is provided, use it; otherwise, use current directory.
+    if outdir:
+        base_dir = os.path.abspath(outdir)
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+    else:
+        base_dir = os.getcwd()
+    
+    # Create the directory structure under base_dir.
+    browser_input_dir = os.path.join(base_dir, f"{prefix}_MOLAS_input", "genome_browser")
+    intermediate_dir = os.path.join(browser_input_dir, "intermediated_file")
+    os.makedirs(intermediate_dir, exist_ok=True)
+    
     # Remove temporary files.
     for f in [f"{prefix}_bgp-NR.bed", f"{prefix}_extracted-gp.tsv"]:
         if os.path.exists(f):
@@ -242,13 +253,11 @@ def organize_files(prefix):
     # Move intermediate files.
     for f in [f"{prefix}_genome.2bit", f"{prefix}_genePred.gp", f"{prefix}_bgp.bed", f"{prefix}_bgp-NR-CDS.bed"]:
         if os.path.exists(f):
-            shutil.move(f, output_dir)
+            shutil.move(f, intermediate_dir)
     # Move the BigBed file.
     bb_file = f"{prefix}_bgp-NR-CDS.bb"
-    dest_browser = f"{prefix}_MOLAS_input/genome_browser/"
-    os.makedirs(dest_browser, exist_ok=True)
     if os.path.exists(bb_file):
-        shutil.move(bb_file, dest_browser)
+        shutil.move(bb_file, browser_input_dir)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -265,10 +274,13 @@ def main():
     parser.add_argument("--tools_dir", default=None, metavar="TOOLS_DIR",
                         help="(Optional) Directory containing UCSC tools and bigGenePred.as. "
                              "If not provided, tools are assumed to be in the PATH and bigGenePred.as is searched in the bedToBigBed directory.")
+    parser.add_argument("-o", "--outdir", default=None, metavar="OUTPUT_DIR",
+                        help="(Optional) Uppermost output directory. If provided, output files will be written below this directory.")
     args = parser.parse_args()
     
     prefix = args.p
     tools_dir = args.tools_dir
+    outdir = args.outdir
     
     # Parse gene biotypes from the GFF3 file.
     global gene_biotypes
@@ -296,7 +308,7 @@ def main():
     create_bigbed(prefix, tools_dir)
     
     # Step 8: Organize output and intermediate files.
-    organize_files(prefix)
+    organize_files(prefix, outdir)
     
     print("BigBed file generation complete.")
 
