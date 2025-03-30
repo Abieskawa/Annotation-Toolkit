@@ -10,9 +10,13 @@ def parse_args():
     parser.add_argument("--input", required=True, help="Input GFF file")
     parser.add_argument("--output", required=True, help="Output file (Circos format)")
     parser.add_argument("--window", type=int, default=100000, help="Window size in bp (default: 100000)")
-    parser.add_argument("--biotype", help="Optional: Only include features with gene_biotype equal to this value")
+    # Create a mutually exclusive group that requires one of --biotype or --feature to be set.
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--biotype", help="Only include features with gene_biotype equal to this value")
+    group.add_argument("--feature", help="Only include features with third column (feature type) equal to this value")
     parser.add_argument("--exclude_biotype", help="Optional: Exclude features with gene_biotype equal to this value")
     parser.add_argument("--genome_fasta", help="Optional: Genome FASTA to clamp last bin to chromosome length")
+    parser.add_argument("--seqids", help="Optional: File containing list of sequence IDs (one per line) to include")
     return parser.parse_args()
 
 def read_fasta_lengths(fasta_file):
@@ -29,24 +33,18 @@ def read_fasta_lengths(fasta_file):
         for line in f:
             line = line.strip()
             if line.startswith(">"):
-                # If we were tracking a previous chromosome, store its length
                 if current_chr is not None:
                     lengths[current_chr] = current_len
-                # Start a new chromosome
-                # Typically the ID is the first token after '>'
-                # e.g. ">scaffold1 some description..."
                 current_chr = line[1:].split()[0]
                 current_len = 0
             else:
-                # Sequence line - add its length
                 current_len += len(line)
-        # Don't forget the last chromosome
         if current_chr is not None:
             lengths[current_chr] = current_len
 
     return lengths
 
-def read_gff(filename, include_biotype=None, exclude_biotype=None):
+def read_gff(filename, include_biotype=None, exclude_biotype=None, include_feature=None, seqids=None):
     chrom_starts = defaultdict(list)
     seen_ids = set()
     duplicates = set()
@@ -59,12 +57,16 @@ def read_gff(filename, include_biotype=None, exclude_biotype=None):
             if len(fields) < 9:
                 continue
             chrom = fields[0]
+            if seqids and chrom not in seqids:
+                continue
+            # Check the feature filter: if --feature was provided, then only include lines with matching third column.
+            if include_feature and fields[2] != include_feature:
+                continue
             try:
                 start = int(fields[3])
             except ValueError:
                 continue
             attributes = fields[8]
-            # Build a dictionary for the attributes
             attr_dict = {}
             for attr in attributes.split(";"):
                 if "=" in attr:
@@ -79,10 +81,8 @@ def read_gff(filename, include_biotype=None, exclude_biotype=None):
                 seen_ids.add(feature_id)
             
             biotype_val = attr_dict.get("gene_biotype", None)
-            # If a biotype filter is provided, only include matching features.
             if include_biotype and biotype_val != include_biotype:
                 continue
-            # If an exclusion filter is provided, skip matching features.
             if exclude_biotype and biotype_val == exclude_biotype:
                 continue
 
@@ -94,34 +94,23 @@ def read_gff(filename, include_biotype=None, exclude_biotype=None):
     return chrom_starts
 
 def count_features(chrom_starts, window_size, chr_lengths=None):
-    """
-    If chr_lengths is provided, the last bin for each chromosome is clamped
-    to the chromosome's length.
-    """
     results = {}
     for chrom, starts in chrom_starts.items():
         if not starts:
             continue
         max_coord = max(starts)
-        # If no reference length is available, use the max coordinate to define windows
-        # else clamp to the chromosome length if known
         chr_len = chr_lengths[chrom] if (chr_lengths and chrom in chr_lengths) else max_coord
-        
-        # e.g. if chr_len=50000 and window=10000 => 5 windows
         n_windows = math.ceil(chr_len / window_size)
         counts = [0] * n_windows
 
-        # Count how many starts land in each bin
         for s in starts:
             idx = (s - 1) // window_size
             counts[idx] += 1
 
-        # Build the bin list
         window_list = []
         for i, count in enumerate(counts):
             w_start = i * window_size + 1
             w_end   = (i + 1) * window_size
-            # If we know the chromosome length, clamp the final bin
             if w_end > chr_len:
                 w_end = chr_len
             window_list.append((w_start, w_end, count))
@@ -137,13 +126,24 @@ def write_results(results, output_file):
 
 def main():
     args = parse_args()
-    # If user provided a FASTA, parse to get chromosome lengths
+    
     chr_lengths = None
     if args.genome_fasta:
         chr_lengths = read_fasta_lengths(args.genome_fasta)
         print(f"Parsed chromosome lengths from {args.genome_fasta}")
 
-    chrom_starts = read_gff(args.input, args.biotype, args.exclude_biotype)
+    allowed_seqids = None
+    if args.seqids:
+        with open(args.seqids, "r") as f:
+            allowed_seqids = {line.strip() for line in f if line.strip()}
+
+    chrom_starts = read_gff(
+        args.input,
+        include_biotype=args.biotype,
+        exclude_biotype=args.exclude_biotype,
+        include_feature=args.feature,
+        seqids=allowed_seqids
+    )
     window_results = count_features(chrom_starts, args.window, chr_lengths)
     write_results(window_results, args.output)
     print(f"Output written to {args.output}")
