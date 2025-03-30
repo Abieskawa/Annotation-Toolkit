@@ -24,13 +24,12 @@ def write_fasta(records, path):
             for i in range(0, len(seq), 60):
                 f.write(seq[i:i+60] + "\n")
 
-def process_records(records, sort_length, remove_list, strip_n):
+def process_records(records, sort_length, remove_list, strip_n, prefix):
     # Optionally strip leading and trailing 'N' characters
     if strip_n:
         records = [(h, s.strip('N')) for h, s in records]
 
     # Optionally remove records with a matching scaffold name.
-    # Here we assume the scaffold name is the first token (without the '>').
     if remove_list:
         filtered = []
         for h, s in records:
@@ -43,12 +42,12 @@ def process_records(records, sort_length, remove_list, strip_n):
     if sort_length:
         records = sorted(records, key=lambda x: len(x[1]), reverse=True)
 
-    # Rename headers to >chrN and create a mapping (original -> new).
+    # Rename headers using the provided prefix and create a mapping.
     mapping = {}
     new_records = []
     for idx, (h, s) in enumerate(records, start=1):
-        original_name = h[1:].split()[0]  # take the first word after '>'
-        new_name = f"chr{idx}"
+        original_name = h[1:].split()[0]  # take the first token after '>'
+        new_name = f"{prefix}{idx}"
         mapping[original_name] = new_name
         new_records.append((f">{new_name}", s))
     return new_records, mapping
@@ -75,20 +74,21 @@ def modify_gff(mapping, infile, outfile):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description="Rename FASTA headers to >chrN, optionally sort by length, remove specified scaffolds, strip N's, generate a mapping table, and modify a GFF file accordingly."
+        description="Rename FASTA headers to a new format (default: chrN), optionally sort by length, remove specified scaffolds, strip N's, generate a mapping table, and modify a GFF file accordingly."
     )
     parser.add_argument("-i", "--infile", required=True, help="Input FASTA file")
     parser.add_argument("-o", "--outfile", required=True, help="Output FASTA file")
     parser.add_argument("--sort-length", action="store_true", help="Sort sequences by length (longest first)")
     parser.add_argument("--remove", nargs="*", default=[], help="Scaffold names to remove (exact match of the first token in header)")
     parser.add_argument("--strip-n", action="store_true", help="Strip leading and trailing 'N' characters from sequences")
+    parser.add_argument("--prefix", default="chr", help="Prefix for renaming sequences (default: 'chr')")
     parser.add_argument("--mapping-out", help="Output file for the mapping table (tab-separated).")
     parser.add_argument("--gff-in", help="Input GFF file to modify")
     parser.add_argument("--gff-out", help="Output modified GFF file")
     args = parser.parse_args()
 
     records = parse_fasta(args.infile)
-    new_records, mapping = process_records(records, args.sort_length, args.remove, args.strip_n)
+    new_records, mapping = process_records(records, args.sort_length, args.remove, args.strip_n, args.prefix)
     write_fasta(new_records, args.outfile)
     
     if args.mapping_out:
