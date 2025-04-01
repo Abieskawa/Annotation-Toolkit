@@ -24,7 +24,7 @@ def main():
         help="Number of longest nuclear chromosomes to extract."
     )
     parser.add_argument(
-        "-s", "--special", nargs="+",
+        "-s", "--special", nargs="+", required=False,
         help="List of keywords to locate special sequences (e.g. 'mitochondria', 'chloroplast', scaffold names)."
     )
     args = parser.parse_args()
@@ -41,25 +41,24 @@ def main():
     SeqIO.write(nuclear_records, args.output_nuclear, "fasta")
     print(f"Nuclear extraction complete. {len(nuclear_records)} sequences written to {args.output_nuclear}.")
 
-    # Extract special sequences if keywords and an output file are provided.
-    if args.special:
-        if not args.output_special:
-            print("Special keywords provided but no output file for special sequences specified. Skipping special extraction.")
-        else:
-            special_records = []
-            for keyword in args.special:
-                found = False
-                for record in records:
-                    # Use a simple substring search (case-insensitive).
-                    if keyword.lower() in record.description.lower():
-                        if record not in special_records:
-                            special_records.append(record)
-                        found = True
-                        break
-                if not found:
-                    print(f"Warning: Special sequence not found for keyword: {keyword}")
-            SeqIO.write(special_records, args.output_special, "fasta")
-            print(f"Special extraction complete. {len(special_records)} sequences written to {args.output_special}.")
+    # Special extraction: Only run if both special keywords and output file are provided.
+    if args.special and args.output_special:
+        special_records = []
+        for keyword in args.special:
+            found = False
+            for record in records:
+                # Use a simple substring search (case-insensitive).
+                if keyword.lower() in record.description.lower():
+                    if record not in special_records:
+                        special_records.append(record)
+                    found = True
+                    break
+            if not found:
+                print(f"Warning: Special sequence not found for keyword: {keyword}")
+        SeqIO.write(special_records, args.output_special, "fasta")
+        print(f"Special extraction complete. {len(special_records)} sequences written to {args.output_special}.")
+    elif args.special or args.output_special:
+        print("Both special keywords (-s) and output file (-os) must be provided to perform special extraction. Skipping special extraction.")
 
 if __name__ == "__main__":
     main()
