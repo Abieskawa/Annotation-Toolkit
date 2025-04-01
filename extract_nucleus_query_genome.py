@@ -17,7 +17,7 @@ def main():
     )
     parser.add_argument(
         "-os", "--output_special", required=False,
-        help="Output FASTA file for special sequences (e.g. mitochondria, chloroplast, scaffold names)."
+        help="[Optional]Output FASTA file for special sequences (e.g. mitochondria, chloroplast, scaffold names)."
     )
     parser.add_argument(
         "-n", "--num", type=int, required=True,
@@ -25,7 +25,7 @@ def main():
     )
     parser.add_argument(
         "-s", "--special", nargs="+", required=False,
-        help="List of keywords to locate special sequences (e.g. 'mitochondria', 'chloroplast', scaffold names)."
+        help="[Optional]List of keywords to locate special sequences (e.g. 'mitochondria', 'chloroplast', scaffold names)."
     )
     args = parser.parse_args()
 
