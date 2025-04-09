@@ -1,5 +1,5 @@
 # Annotation-Toolkit
-This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools does not make it open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding gene, ncRNA, mitochondria gene. Codes for functional annotation for protein-coding gene is recorded here, too. We recommend read and run everything with your genome first to know every details, and any adjustment might require to your genome, if you are familar with the workflow, then switch to the nextflow and docker.
+This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools does not make it open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding gene, ncRNA, mitochondria gene. Codes for functional annotation for protein-coding gene is recorded here, too. We recommend read and run everything with your genome first to know every details, and any adjustment might require refer to your genome, if you are familar with the workflow, then switch to the nextflow and docker.
 
 This script has been tested on beltfish, marine tialpia, asian hard clam.
 
@@ -68,7 +68,10 @@ NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/
 Ex. fish genetic code: 2, asian hard clam genetic code: 5
 Version: runmitos.py 2.1.9
 ```
-runmitos.py -i 04_SplitMitoNuclear/beltfish_genome_mito_reconstruct.fasta -c 2 -R ../MITOS2-refdata/ -r refseq89m -o 06_mitos/ --best --debug
+runmitos.py -i {input mitochondria genome} -c {code for different species} -R ../MITOS2-refdata/ -r refseq89m -o 06_mitos/ --best --debug
+
+#Check and adjust if any gene span the split point
+python ../Annotation-Toolkit/check_adjust_mito.py -f 00_annotation_start_genome/tig00000002_candidate_mt.fasta -g 06_mitos/result.gff -o 00_annotation_start_genome/M_tai_adjusted_mitochondria.fasta -i 00_annotation_start_genome/adjust_log.txt --margin 0
 ```
 
 ## Run ncRNA Annotation
@@ -116,7 +119,9 @@ gffread -T 07_merge_gff/merged_fix.gff -o 07_merge_gff/merged_fix_tran.gtf
 python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r 07_merge_gff/merged_fix_tran.gtf -p beltfish_v2 -a combined
 
 #-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
-nohup python ../Annotation-Toolkit/eva_annotation.py psa -g 07_merge_gff/merged_fix.gff -f 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -b beltfish_v2 -o beltfish_v2 -p 07_renamed_braker3/braker_renamed.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output > run_eva_combined.log 2>&1 &
+#if you want to skip any chr/scaffold, use --exclude_scaffolds
+nohup python ../Annotation-Toolkit/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -b beltfish_v2 -o 07_merge_gff/ -p 07_renamed_braker3/braker_rename
+d.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output --exclude_scaffolds MT > run_eva_combined.log 2>&1 &
 ```
 
 ## Run gtf2gff
@@ -147,7 +152,9 @@ python ../Annotation-Toolkit/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish
 
 ## Generate MOLAS input fasta and reproduce protein fasta file
 ```
-python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r 07_merge_gff/merged_fix.gff -p 08_beltfish_v2 -a combined -v
+python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito_adjusted.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combi
+ned -v --pep_mitos 06_mitos_adjusted/result.faa --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_har
+d_clam_MOLAS_input
 ```
 
 ## Prepare NR protein database
