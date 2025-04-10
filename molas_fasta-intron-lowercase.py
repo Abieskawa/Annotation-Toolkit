@@ -144,12 +144,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
                             fout.write(line_out + "\n")
             elif feat_lower == "gene":
                 for gene_id, gene_data in genes.items():
-                    combined_exons = []
-                    for t in valid_transcripts.values():
-                        if t.get("parent_gene") == gene_id:
-                            combined_exons.extend(t["exons"])
-                    if not combined_exons:
-                        continue
                     chrom, gstart, gend, strand, gene_attr = gene_data
                     bed_start = gstart - 1 if adjust_start else gstart
                     line_out = f"{chrom}\t{bed_start}\t{gend}\t{gene_id}\t.\t{strand}"
