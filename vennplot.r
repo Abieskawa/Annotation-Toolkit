@@ -117,7 +117,8 @@ p <- venn(gene_sets,
           ilabels = "counts",     # show computed counts for each intersection
           zcolor = c("#b90489", "#04c6f7f1", "#00a651", "#ffcc00", "#ff8400"),
           col = c("red", "black", "black", "black", "black"),
-          lty = 1,                # line type for borders
+          lty = 1,
+          ilcs = 1, sncs = 1,                # line type for borders
           ggplot = TRUE)          # produce the plot as a ggplot object
 
 # Debug output: inspect the computed intersections in the returned object
