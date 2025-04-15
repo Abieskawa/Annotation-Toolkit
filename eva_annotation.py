@@ -372,6 +372,7 @@ def run_structural(args):
         n_exon_included = n_exon
         median_included = median_len
         genome_size_included = full_genome_size
+        genes_df_included = genes_df.copy()
         if gene_biotype_available:
             pc_included = genes_df.copy()  # all genes_df
             pc_included = pc_included[pc_included["gene_biotype"]=="protein_coding"]
