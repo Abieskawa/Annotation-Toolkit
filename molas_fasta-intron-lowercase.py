@@ -5,18 +5,27 @@ import sys
 import os
 import re
 import shutil
+from Bio.Seq import Seq
 
 def usage():
     print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [-d <outputdir>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
-    """Run a command and exit if it fails."""
+    """Run a command and exit if it fails. Capture and display stderr output."""
     print("Running: " + (" ".join(cmd) if not shell else cmd))
-    result = subprocess.run(cmd, shell=shell)
-    if result.returncode != 0:
+    
+    try:
+        if shell:
+            result = subprocess.run(cmd, shell=True, check=True, 
+                                   stderr=subprocess.PIPE, text=True)
+        else:
+            result = subprocess.run(cmd, check=True, 
+                                   stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
         print("Error running command: ", cmd, file=sys.stderr)
-        sys.exit(result.returncode)
+        print("Error output:", e.stderr, file=sys.stderr)
+        sys.exit(e.returncode)
 
 def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbose=False):
     """
@@ -151,25 +160,6 @@ def extract_bed_from_gff(gff_file, features, bed_files, adjust_start=True, verbo
     return
 
 def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
-    """
-    Process the input peptide FASTA file.
-    
-    For mitos input (pep_type == "mitos"):
-      - Remove any trailing "*" from sequences.
-      - For each record, assume the header is in the format:
-            >MT; 487-1453; +; nad1
-        and extract the gene name from the last semicolon-delimited field.
-      - If the header already starts with header_prefix+"_gene_", leave it unchanged.
-      - Otherwise, write a new header as:
-            >{header_prefix}_gene_{gene}.p
-    
-    For braker input (pep_type == "braker"):
-      - Remove any trailing "*" from sequences.
-      - If the header already starts with header_prefix+"_", leave it unchanged.
-      - Otherwise, change the header to:
-            >{header_prefix}_{original_header_without '>'} 
-        with the substitution of '.t' to '.p' in the original header.
-    """
     records = []
     with open(pep_in) as fin:
         header = None
@@ -184,6 +174,7 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
                 seq_lines.append(line.strip())
         if header:
             records.append((header, "".join(seq_lines)))
+    
     updated_records = []
     if pep_type == "mitos":
         expected_prefix = f"{header_prefix}_gene_"
@@ -202,13 +193,26 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
         expected_prefix = f"{header_prefix}_"
         for header, seq in records:
             seq = seq.rstrip("*")
-            if header.startswith(">" + expected_prefix):
-                updated_records.append((header, seq))
+        
+            # Get the ID part without the ">"
+            original_id = header[1:]
+        
+            # Replace .t with .p instead of appending .p
+            if ".t" in original_id:
+                modified_id = original_id.replace(".t", ".p")
             else:
-                # Replace '.t' with '.p' in the original header (after removing the '>')
-                new_header = f">{expected_prefix}{header[1:].strip().replace('.t', '.p')}"
-                updated_records.append((new_header, seq))
+                # If no .t pattern found, just append .p
+                modified_id = original_id + ".p"
+            
+            # Check if prefix needs to be added
+            if not modified_id.startswith(expected_prefix):
+                new_header = f">{expected_prefix}{modified_id}"
+            else:
+                new_header = f">{modified_id}"
+            
+            updated_records.append((new_header, seq))
         print("Processed braker peptide input.")
+
     else:
         print("Unknown peptide type specified.", file=sys.stderr)
         sys.exit(1)
@@ -216,6 +220,119 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
         for rec in updated_records:
             fout.write(f"{rec[0]}\n{rec[1]}\n")
     print(f"Peptide FASTA processed and written to: {pep_out}")
+
+def translate_geseq_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
+    """
+    Translate CDS FASTA produced by gffread for GeSeq annotations.
+    Uses gene names from gene FASTA file and adds .p to create protein IDs.
+    Reports which sequences have issues like partial codons.
+    """
+    # First, extract all gene names from the gene FASTA file
+    gene_names = []
+    with open(gene_fa) as f:
+        for line in f:
+            if line.startswith('>'):
+                gene_name = line.strip()[1:]  # Remove '>' character
+                gene_names.append(gene_name)
+    
+    # Create a mapping from transcript IDs to gene names based on gene name patterns
+    gene_mapping = {}
+    for gene in gene_names:
+        # Extract the core part like "ND4" from names like "M_tai_gene-blatx_ND4_1"
+        match = re.search(r'gene-blatx_([^_]+)', gene)
+        if match:
+            core_name = match.group(1)
+            gene_mapping[core_name.upper()] = gene  # Store in uppercase for case-insensitive matching
+    
+    # Now translate CDS and map to gene names
+    with open(cds_fa) as fh, open(pep_out, "w") as out:
+        hdr, seq = None, []
+        for ln in fh:
+            if ln.startswith(">"):
+                if hdr:
+                    # Try to extract gene identifier from header
+                    try:
+                        # Pattern: >PREFIX_transcript_GENE_COORDINATES.cds1
+                        # Extract just the GENE part
+                        gene_id = re.search(r'_transcript_([^_]+)_', hdr).group(1)
+                    except (IndexError, AttributeError):
+                        gene_id = hdr.strip()
+                    
+                    # Find matching gene name from gene FASTA
+                    matched_gene = None
+                    for key, value in gene_mapping.items():
+                        if key in gene_id.upper():
+                            matched_gene = value
+                            break
+                    
+                    # If no match found, use the extracted gene ID
+                    if not matched_gene:
+                        matched_gene = gene_id
+                    
+                    # Handle the partial codon issue
+                    full_seq = "".join(seq)
+                    
+                    # Check if sequence has partial codons and report it
+                    if len(full_seq) % 3 != 0:
+                        print(f"WARNING: Partial codon detected in sequence {hdr}")
+                        print(f"Sequence length: {len(full_seq)} (not divisible by 3)")
+                        remaining = len(full_seq) % 3
+                        print(f"Trimming {remaining} nucleotide(s) from the end")
+                        trimmed_seq = full_seq[:len(full_seq) - remaining]
+                    else:
+                        trimmed_seq = full_seq
+                    
+                    try:
+                        prot = str(Seq(trimmed_seq).translate(table=table,
+                                                         to_stop=True,
+                                                         cds=False))
+                        # Format as GENE.p
+                        out.write(f">{matched_gene}.p\n{prot}\n")
+                    except Exception as e:
+                        print(f"ERROR translating sequence {hdr}: {str(e)}")
+                        print(f"Sequence: {trimmed_seq[:50]}... (showing first 50 chars)")
+                
+                hdr, seq = ln[1:].strip(), []
+            else:
+                seq.append(ln.strip())
+                
+        # Process the last record
+        if hdr:
+            try:
+                gene_id = re.search(r'_transcript_([^_]+)_', hdr).group(1)
+            except (IndexError, AttributeError):
+                gene_id = hdr.strip()
+            
+            # Find matching gene name
+            matched_gene = None
+            for key, value in gene_mapping.items():
+                if key in gene_id.upper():
+                    matched_gene = value
+                    break
+            
+            if not matched_gene:
+                matched_gene = gene_id
+                
+            full_seq = "".join(seq)
+            
+            # Check if sequence has partial codons and report it
+            if len(full_seq) % 3 != 0:
+                print(f"WARNING: Partial codon detected in sequence {hdr}")
+                print(f"Sequence length: {len(full_seq)} (not divisible by 3)")
+                remaining = len(full_seq) % 3
+                print(f"Trimming {remaining} nucleotide(s) from the end")
+                trimmed_seq = full_seq[:len(full_seq) - remaining]
+            else:
+                trimmed_seq = full_seq
+                
+            try:
+                prot = str(Seq(trimmed_seq).translate(table=table,
+                                                  to_stop=True,
+                                                  cds=False))
+                out.write(f">{matched_gene}.p\n{prot}\n")
+            except Exception as e:
+                print(f"ERROR translating sequence {hdr}: {str(e)}")
+                print(f"Sequence: {trimmed_seq[:50]}... (showing first 50 chars)")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -229,6 +346,10 @@ def main():
     parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
     parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
     parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
+    parser.add_argument("--geseq", action="store_true",
+                help="Translate GeSeq‑style CDS records in the generated CDS FASTA")
+    parser.add_argument("--table", type=int, required="--geseq" in sys.argv,
+                help="Genetic‑code table ID/name for Bio.Seq.translate; required with --geseq")
     parser.add_argument("-d", "--outputdir", help="Specify the output directory name (default: MOLAS_input)", default="MOLAS_input")
     args = parser.parse_args()
 
@@ -343,6 +464,13 @@ def main():
         out_pep_mitos = f"{file_prefix}_{annotator}_pep_mitos.fa"
         process_pep_file(args.pep_mitos, out_pep_mitos, header_prefix, "mitos")
         processed_pep_files.append(out_pep_mitos)
+    if args.geseq:
+       if Seq is None:
+          sys.exit("ERROR: Biopython is not installed but --geseq was requested")
+       geseq_pep = f"{file_prefix}_{annotator}_pep_geseq.fa"
+       translate_geseq_cds(cds_fa, geseq_pep, args.table)
+       processed_pep_files.append(geseq_pep)
+
     if args.pep_braker:
         out_pep_braker = f"{file_prefix}_{annotator}_pep_braker.fa"
         process_pep_file(args.pep_braker, out_pep_braker, header_prefix, "braker")
