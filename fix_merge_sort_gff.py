@@ -302,23 +302,8 @@ def convert_tblout_to_gff(lines, args):
     return accepted, dropped
 
 def fix_braker3(lines, args):
-    """
-    Clean up GFF records produced by BRAKER3.
-
-    ‑ If a gene feature lacks `gene_biotype`, add `gene_biotype=protein_coding`.
-    ‑ Prepend `args.basename + "_"` to the values of ID/Parent/gene_id/transcript_id
-      (handles comma‑separated lists) unless the prefix is already present.
-    """
     new_lines = []
-
-    # local helper: add basename if needed
-    def _prefix(val: str) -> str:
-        if not args.basename or val in (None, "", "."):
-            return val
-        return ",".join(
-            tok if tok.startswith(f"{args.basename}_") else f"{args.basename}_{tok}"
-            for tok in (x.strip() for x in val.split(","))
-        )
+    prefix = f"{args.basename}_" if args.basename else ""
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -336,14 +321,15 @@ def fix_braker3(lines, args):
         seq, src, feat, start, end, score, strand, phase, attr = parts
         attrs = parse_attrs(attr) if attr and attr != "." else {}
 
-        # 1) ensure gene_biotype
+        # 1) add default gene_biotype
         if feat.lower() == "gene" and "gene_biotype" not in attrs:
             attrs["gene_biotype"] = "protein_coding"
 
-        # 2) add basename prefix where relevant
-        for key in ("ID", "Parent", "gene_id", "transcript_id"):
-            if key in attrs:
-                attrs[key] = _prefix(attrs[key])
+        # 2) add basename prefix where needed
+        if prefix:
+            for key in ("ID", "Parent", "gene_id", "transcript_id"):
+                if key in attrs and not attrs[key].startswith(prefix):
+                    attrs[key] = f"{prefix}{attrs[key]}"
 
         new_attr = reconst_attrs(attrs) if attrs else "."
         new_lines.append("\t".join(
@@ -351,6 +337,7 @@ def fix_braker3(lines, args):
         ))
 
     return new_lines
+
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
     out = []
