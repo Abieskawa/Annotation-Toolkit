@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Combined GFF tool:  
-  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos) to create 
+  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos, geseq) to create 
     gene/child/exon hierarchies and ensures only 9 columns with a single "##gff-version 3".
   - Processes all input files (provided via -I) and writes intermediate <basename>_fix.gff files, 
     then merges them into one merged_fix.gff.
@@ -70,7 +70,6 @@ def normalize_type(s):
 
 def gen_uid(seq, typ, cnt, basename=None):
     if basename:
-        # Always include the seq (chromosome) between basename and type.
         return f"{basename}_{seq}_{normalize_type(typ)}{cnt}"
     else:
         return f"{seq}_{normalize_type(typ)}{cnt}"
@@ -84,7 +83,6 @@ def fix_mitos_attr_field(attr, seq, args):
             continue
         if '=' in chunk:
             key, value = chunk.split('=', 1)
-            # Force Is_circular to "true"
             if key == "Is_circular":
                 value = "true"
             if key in ("ID", "Parent", "gene_id"):
@@ -98,7 +96,6 @@ def fix_mitos_attr_field(attr, seq, args):
         out += ';'
     return out
 
-# --- Revised mitos processing with CDS insertion using exon coordinates ---
 def fix_mitos_lines(lines, args):
     header_lines = [l for l in lines if l.startswith("#")]
     data_lines = [l for l in lines if not l.startswith("#")]
@@ -107,8 +104,7 @@ def fix_mitos_lines(lines, args):
     except Exception as e:
         logging.warning("Sorting mitos input failed: " + str(e))
     lines = header_lines + data_lines
-
-    local_dropped = []  # Collect dropout entries for mitos
+    local_dropped = []
     inserted_mrna_ids = set()
     gene_info = {} 
     child_biotype = {}
@@ -116,7 +112,6 @@ def fix_mitos_lines(lines, args):
     output_lines = []
     cds_counter = {}
     exon_counter = {}
-
     for line in lines:
         line = line.rstrip("\n")
         if line.startswith("#"):
@@ -269,7 +264,6 @@ def fix_mitos_lines(lines, args):
     sorted_lines = sort_merge_gff_lines(updated_lines)
     return sorted_lines, local_dropped
 
-# ---------------- Infernal Tblout → GFF ----------------
 def convert_tblout_to_gff(lines, args):
     accepted = []
     dropped = []
@@ -298,27 +292,15 @@ def convert_tblout_to_gff(lines, args):
             s_from, s_to = fs[7], fs[8]
             strand, score, ev = fs[9], fs[14], fs[15]
             feature = fs[2]
+        # No coordinate check is done – simply convert s_from and s_to.
+        s = int(s_from)
+        e = int(s_to)
         if args.ignore_trna and "trna" in feature.lower():
             dropped.append((line, "[infernal] Ignored tRNA (due to --ignore-trna)"))
-            continue
-        try:
-            if strand == "+":
-                s, e = int(s_from), int(s_to)
-            else:
-                s, e = int(s_to), int(s_from)
-        except Exception as ex:
-            dropped.append((line, f"[infernal] Coord parse error: {ex}"))
-            continue
-        if args.min_bit is not None and float(score) < args.min_bit:
-            dropped.append((line, "[infernal] Bit score below threshold"))
-            continue
-        if args.max_evalue is not None and float(ev) > args.max_evalue:
-            dropped.append((line, "[infernal] E-value above threshold"))
             continue
         accepted.append("\t".join([seq, src, feature, str(s), str(e), score, strand, ".", "."]))
     return accepted, dropped
 
-# ---------------- Braker3 fix ----------------
 def fix_braker3(lines, args):
     new_lines = []
     for line in lines:
@@ -343,21 +325,113 @@ def fix_braker3(lines, args):
         new_lines.append("\t".join([seq, src, feat, start, end, score, strand, phase, attr]))
     return new_lines
 
-# ---------------- GFF fix for infernal / tRNAscan‑se ----------------
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
     out = []
     cnts, tcnts = defaultdict(int), defaultdict(int)
-    for line in lines:
-        if line.startswith("#") or not line.strip():
-            out.append(line.rstrip("\n"))
-            continue
-        parts = line.rstrip("\n").split('\t')
-        if len(parts) != 9:
-            out.append(line.rstrip("\n"))
-            continue
-        seq, src, typ, start, end, score, strand, phase, attr = parts
-        if in_fmt == "infernal":
+    
+    if in_fmt == "trnascan-se":
+        # First pass: build a set of pseudogene IDs (normalized to lower case)
+        pseudogene_ids = set()
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.rstrip("\n").split('\t')
+            if len(parts) != 9:
+                continue
+            typ = parts[2].strip().lower()
+            if typ == "pseudogene":
+                d = parse_attrs(parts[8])
+                pgid = d.get("ID", "").strip().lower()
+                if args.basename and not pgid.startswith(f"{args.basename}"):
+                    pgid = f"{args.basename}_{pgid}"
+                pseudogene_ids.add(pgid)
+        gene_type_map = {}
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                out.append(line.rstrip("\n"))
+                continue
+            parts = line.rstrip("\n").split('\t')
+            if len(parts) != 9:
+                out.append(line.rstrip("\n"))
+                continue
+            seq, src, typ, start, end, score, strand, phase, attr = parts
+            # If the line is a pseudogene, output it normally.
+            if typ.lower() == "pseudogene":
+                d = parse_attrs(attr)
+                if args.basename:
+                    if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                        d['ID'] = f"{args.basename}_{d['ID']}"
+                    if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
+                        d['Parent'] = f"{args.basename}_{d['Parent']}"
+                gene_id = d.get("ID", "").strip().lower()
+                gene_type_map[gene_id] = d.get("gene_biotype", typ).lower()
+                out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+            # Else if the type exists in CSV (regular gene record)
+            elif typ in csvdata:
+                info = csvdata[typ]
+                toks = info['Type']
+                if any(x.lower() == "gene" for x in toks):
+                    child_tok = toks[1] if len(toks) > 1 else typ
+                    cnts[(seq, child_tok.lower()+"_g")] += 1
+                    if args.basename:
+                        gid = f"{args.basename}_{seq}_{normalize_type(child_tok + '_g')}{cnts[(seq, child_tok.lower() + '_g')]}"
+                    else:
+                        gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")])
+                    pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
+                    out.append("\t".join([seq, src, "gene", start, end, score, strand, phase, reconst_attrs(pattrs)]))
+                    gene_type_map[gid] = child_tok.lower()
+                    d = parse_attrs(attr)
+                    d['Parent'] = gid
+                    if args.basename:
+                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                            d['ID'] = f"{args.basename}_{d['ID']}"
+                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+                else:
+                    d = parse_attrs(attr)
+                    if args.basename:
+                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                            d['ID'] = f"{args.basename}_{d['ID']}"
+                        if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
+                            d['Parent'] = f"{args.basename}_{d['Parent']}"
+                    gene_id = d.get("ID", "").strip().lower()
+                    gene_type_map[gene_id] = d.get("gene_biotype", typ).lower()
+                    if typ.lower() == "pseudogene":
+                        pseudogene_ids.add(gene_id)
+                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+            else:
+                if typ.lower() == "exon":
+                    d = parse_attrs(attr)
+                    parent_id = d.get("Parent", "").strip().lower()
+                    if args.basename and not parent_id.startswith(f"{args.basename}"):
+                        parent_id = f"{args.basename}_{parent_id}"
+                    if parent_id in pseudogene_ids:
+                        continue
+                    else:
+                        if args.basename:
+                            if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                                d['ID'] = f"{args.basename}_{d['ID']}"
+                            if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
+                                d['Parent'] = f"{args.basename}_{d['Parent']}"
+                        out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+                else:
+                    d = parse_attrs(attr)
+                    if args.basename:
+                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                            d['ID'] = f"{args.basename}_{d['ID']}"
+                        if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
+                            d['Parent'] = f"{args.basename}_{d['Parent']}"
+                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+    elif in_fmt == "infernal":
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                out.append(line.rstrip("\n"))
+                continue
+            parts = line.rstrip("\n").split('\t')
+            if len(parts) != 9:
+                out.append(line.rstrip("\n"))
+                continue
+            seq, src, typ, start, end, score, strand, phase, attr = parts
             if typ in csvdata:
                 info = csvdata[typ]
                 toks = info['Type']
@@ -390,43 +464,17 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                     out.append("\t".join([seq, src, "biological_region", start, end, score, strand, phase, reconst_attrs(battrs)]))
             else:
                 out.append("\t".join(parts[:8] + [attr if attr else "."]))
-        elif in_fmt == "trnascan-se":
-            if typ in csvdata:
-                info = csvdata[typ]
-                toks = info['Type']
-                if any(x.lower() == "gene" for x in toks):
-                    child_tok = toks[1] if len(toks) > 1 else typ
-                    cnts[(seq, child_tok.lower()+"_g")] += 1
-                    if args.basename:
-                        gid = f"{args.basename}_{seq}_{normalize_type(child_tok + '_g')}{cnts[(seq, child_tok.lower() + '_g')]}"
-                    else:
-                        gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")])
-                    pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
-                    out.append("\t".join([seq, src, "gene", start, end, score, strand, phase, reconst_attrs(pattrs)]))
-                    d = parse_attrs(attr)
-                    d['Parent'] = gid
-                    if args.basename:
-                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                            d['ID'] = f"{args.basename}_{d['ID']}"
-                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
-                else:
-                    d = parse_attrs(attr)
-                    if args.basename:
-                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                            d['ID'] = f"{args.basename}_{d['ID']}"
-                        if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
-                            d['Parent'] = f"{args.basename}_{d['Parent']}"
-                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+    else:
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                out.append(line.rstrip("\n"))
             else:
-                d = parse_attrs(attr)
-                if args.basename:
-                    if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                        d['ID'] = f"{args.basename}_{d['ID']}"
-                    if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
-                        d['Parent'] = f"{args.basename}_{d['Parent']}"
-                out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
-        else:
-            out.append("\t".join(parts[:8] + [attr if attr else "."]))
+                parts = line.rstrip("\n").split('\t')
+                if len(parts) != 9:
+                    out.append(line.rstrip("\n"))
+                else:
+                    seq, src, typ, start, end, score, strand, phase, attr = parts
+                    out.append("\t".join(parts[:8] + [attr if attr else "."]))
     final = []
     for l in out:
         if l.startswith("##gff-version"):
@@ -435,40 +483,175 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
     final.insert(0, "##gff-version 3")
     return final
 
+# ---------------- New: Geseq fix ----------------
+def fix_geseq_lines(lines, args):
+    """
+    Rewrite GeSeq GFF so that:
+      • All original GeSeq header lines (`##source-version`, `##sequence-region`,
+        …) are preserved (plus a single leading '##gff-version 3').
+      • `region` / `source` feature lines are copied verbatim.
+      • Every *individual* GeSeq record (distinguished by its original ID if
+        present, otherwise by gene name + coordinates) becomes its own
+        gene‑level hierarchy — no collapsing when two hits share the same
+        `gene=` tag.
+    """
+    # ---------- keep headers ----------
+    orig_headers = [l.rstrip('\n') for l in lines if l.startswith("##")]
+    out_hdr = ["##gff-version 3"] + [h for h in orig_headers
+                                     if not h.startswith("##gff-version")]
+
+    data_lines  = [l.rstrip('\n') for l in lines if not l.startswith("##")]
+
+    # ---------- passthrough region / source ----------
+    passthrough = [
+        l for l in data_lines
+        if (len(l.split('\t')) >= 3 and
+            l.split('\t')[2].lower() in ("region", "source"))
+    ]
+
+    # ---------- group each record by a unique key ----------
+    gene_groups = {}
+    for line in data_lines:
+        parts = line.split('\t')
+        if len(parts) < 9:
+            continue
+
+        seq, source, feature, start, end, score, strand, phase, attrs_str = parts
+        feat_lower = feature.lower()
+        if feat_lower in ("region", "source"):
+            continue
+
+        attrs = parse_attrs(attrs_str)
+        gene_name = attrs.get("gene")
+        if gene_name is None:
+            continue
+
+        orig_id = attrs.get("ID")
+        # unique key: prefer original ID; fall back to gene + coords
+        key = orig_id if orig_id else f"{gene_name}:{start}-{end}:{strand}"
+
+        if feat_lower == "gene":
+            gene_groups.setdefault(key, {})["gene"] = {
+                "seq": seq, "source": source, "start": start, "end": end,
+                "strand": strand, "attrs": attrs
+            }
+        elif feat_lower in ("trna", "mrna", "rrna", "cds"):
+            gene_groups.setdefault(key, {})["transcript"] = {
+                "seq": seq, "source": source, "feature": feature,
+                "start": start, "end": end, "strand": strand, "attrs": attrs
+            }
+
+    output = out_hdr + passthrough
+
+    for key, group in gene_groups.items():
+        if "gene" not in group:
+            continue
+
+        gene_rec   = group["gene"]
+        gene_attrs = gene_rec["attrs"]
+        gene_name  = gene_attrs.get("gene", "unknown")
+        orig_gene_id = gene_attrs.get("ID")
+
+        # build gene ID (preserve original, prepend basename if needed)
+        if orig_gene_id:
+            gene_id = orig_gene_id
+            if args.basename and not gene_id.startswith(f"{args.basename}_"):
+                gene_id = f"{args.basename}_{gene_id}"
+        else:
+            gene_id = (f"{args.basename}_gene_{gene_name}"
+                       if args.basename else
+                       f"{gene_rec['seq']}_gene_{gene_name}_{gene_rec['start']}")
+
+        gene_biotype = gene_attrs.get("gene_biotype", "tRNA")
+        g_attrs = {"ID": gene_id, "Name": gene_name,
+                   "gene_id": gene_id, "gene_biotype": gene_biotype}
+
+        output.append("\t".join([
+            gene_rec["seq"], gene_rec["source"], "gene",
+            gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
+            reconst_attrs(g_attrs)
+        ]))
+
+        # ---------- transcript / CDS / exon ----------
+        transcript_id = (f"{args.basename}_transcript_{gene_name}_{gene_rec['start']}"
+                         if args.basename else
+                         f"{gene_rec['seq']}_transcript_{gene_name}_{gene_rec['start']}")
+
+        if "transcript" in group:
+            tr = group["transcript"]
+            t_feature = ("mRNA" if gene_biotype.lower() == "protein_coding"
+                         else tr["feature"])
+            output.append("\t".join([
+                tr["seq"], tr["source"], t_feature,
+                tr["start"], tr["end"], ".", tr["strand"], "0",
+                reconst_attrs({"ID": transcript_id, "Parent": gene_id})
+            ]))
+            if gene_biotype.lower() == "protein_coding":
+                output.append("\t".join([
+                    tr["seq"], tr["source"], "CDS",
+                    tr["start"], tr["end"], ".", tr["strand"], "0",
+                    reconst_attrs({"ID": f"{transcript_id}.cds1",
+                                   "Parent": transcript_id})
+                ]))
+            exon_seq, exon_start, exon_end, exon_strand = (
+                tr["seq"], tr["start"], tr["end"], tr["strand"])
+        else:
+            # create synthetic transcript using gene coords
+            t_feature = "mRNA" if gene_biotype.lower() == "protein_coding" else "tRNA"
+            output.append("\t".join([
+                gene_rec["seq"], gene_rec["source"], t_feature,
+                gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
+                reconst_attrs({"ID": transcript_id, "Parent": gene_id})
+            ]))
+            if gene_biotype.lower() == "protein_coding":
+                output.append("\t".join([
+                    gene_rec["seq"], gene_rec["source"], "CDS",
+                    gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
+                    reconst_attrs({"ID": f"{transcript_id}.cds1",
+                                   "Parent": transcript_id})
+                ]))
+            exon_seq, exon_start, exon_end, exon_strand = (
+                gene_rec["seq"], gene_rec["start"], gene_rec["end"], gene_rec["strand"])
+
+        exon_id = f"{transcript_id}.exon1"
+        output.append("\t".join([
+            exon_seq, gene_rec["source"], "exon",
+            exon_start, exon_end, ".", exon_strand, "0",
+            reconst_attrs({"ID": exon_id, "Parent": transcript_id,
+                           "Name": gene_name})
+        ]))
+
+    return output
+
 def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
     if in_fmt == "mitos":
-        return fix_mitos_lines(lines, args)  # returns (fixed_lines, dropped)
+        return fix_mitos_lines(lines, args)
     elif in_fmt == "braker3":
         return fix_braker3(lines, args), []
     elif in_fmt in ("infernal", "trnascan-se"):
         return fix_gff_lines(lines, csv_fp, in_fmt, args), []
+    elif in_fmt == "geseq":
+        return fix_geseq_lines(lines, args), []
     else:
         return lines, []
 
-# ---------------- Cleanup ----------------
 def cleanup_for_fix(lines):
-    # Count all lines starting with "#" in the original file.
     header_count_before = sum(1 for line in lines if line.startswith("#"))
     out = []
     version_found = False
     for line in lines:
-        # Drop any special spec-version header.
         if line.startswith("#!gff-spec-version"):
             continue
-        # Process the standard GFF version header.
         if line.startswith("##gff-version"):
             if not version_found:
                 out.append("##gff-version 3")
                 version_found = True
             else:
-                # Drop duplicate version headers.
                 continue
-        # Preserve any other header/comment lines (or empty lines) as is.
         elif line.startswith("#"):
             out.append(line)
         else:
             out.append(line)
-    # Now, for non-comment lines, ensure that only the first 9 columns are kept.
     final = []
     for line in out:
         if line.startswith("#"):
@@ -479,12 +662,10 @@ def cleanup_for_fix(lines):
             final.append("\t".join(parts[:9]))
         else:
             final.append(line)
-    # Count the header lines in the final output.
     header_count_after = sum(1 for line in final if line.startswith("#"))
     dropped_header_count = header_count_before - header_count_after
     return final, dropped_header_count, header_count_before
 
-# ---------------- Hierarchy & Sorting ----------------
 def get_hierarchy_level(feature, attributes):
     f = feature.lower()
     if f in ('gene', 'biological_region'):
@@ -518,12 +699,10 @@ def sort_merge_gff_lines(lines):
     df['start'] = pd.to_numeric(df['start'], errors='coerce')
     df = df.dropna(subset=['start'])
     df['hierarchy'] = df.apply(lambda row: get_hierarchy_level(row['feature'], row['attributes']), axis=1)
-    # Create a natural sort key for scaffold names.
     df['scaffold_key'] = df['scaffold'].apply(
         lambda x: tuple(int(text) if text.isdigit() else text.lower() 
                         for text in re.split(r'(\d+)', x))
     )
-    # Now sort by the natural scaffold key, then start and hierarchy.
     df = df.sort_values(by=['scaffold_key','start','hierarchy'])
     df = df.drop(columns=['scaffold_key','hierarchy'])
     merged = ["\t".join(map(str, row)) for row in df.values]
@@ -534,12 +713,10 @@ def sort_merge_gff_lines(lines):
     final = ["##gff-version 3"] + unique_hdr + merged
     return final
 
-# ---------------- File Processing ----------------
 def process_file(fmt, fname, args):
     with open(fname, 'r') as f:
         orig_lines = f.readlines()
     input_count = len(orig_lines)
-    # Count all header lines starting with "#" immediately after reading the file.
     orig_header_count = sum(1 for line in orig_lines if line.startswith("#"))
     dropped = []
     fmt_lower = fmt.lower()
@@ -549,12 +726,11 @@ def process_file(fmt, fname, args):
         conv_count = len(converted)
         lines = converted
         dropped = drops2
-    elif fmt_lower in ("braker3", "mitos", "trnascan-se"):
-        lines = orig_lines[:]  # Use original lines for processing
+    elif fmt_lower in ("braker3", "mitos", "trnascan-se", "geseq"):
+        lines = orig_lines[:]
     fixed, local_dropped = fix_gff_lines_main(lines, args.csv, fmt_lower, args)
     dropped.extend(local_dropped)
     cleaned, _, _ = cleanup_for_fix(fixed)
-    # Use the original header count from the file.
     header_count_before = orig_header_count
     header_dropped = max(header_count_before - 1, 0)
     base = os.path.basename(fname)
@@ -565,7 +741,6 @@ def process_file(fmt, fname, args):
     print(f"----\nWrote intermediate all-fix file: {out_fname} with {len(cleaned)} lines.")
     return cleaned, dropped, input_count, conv_count, header_count_before
 
-# ---------------- All mode ----------------
 def process_all(args):
     non_mitos_lines = []
     mitos_lines = []
@@ -577,7 +752,6 @@ def process_all(args):
     for (fmt, fname) in args.I:
         fixed, dropped, input_count, conv_count, orig_header_count = process_file(fmt, fname, args)
         cleaned, _, _ = cleanup_for_fix(fixed)
-        # Use the original header count from the file.
         header_count_before = orig_header_count
         header_dropped = max(header_count_before - 1, 0)
         base = os.path.basename(fname)
@@ -669,13 +843,12 @@ def process_all(args):
             print(msg)
     return merged, all_drops, metrics
 
-# ---------------- main ----------------
 def main():
     parser = argparse.ArgumentParser(
         description="GFF combine & fix tool. Processes all input files, writes intermediate _fix.gff files, then merges them into merged_fix.gff."
     )
     parser.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
-                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos})")
+                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos, geseq})")
     parser.add_argument("--csv", type=str, default="Rfam_15_0.csv",
                         help="CSV for lookup (default=Rfam_15_0.csv).")
     parser.add_argument("--outdir", type=str, required=True,
@@ -695,8 +868,6 @@ def main():
     args = parser.parse_args()
     
     csv_data = load_csv(args.csv)
-    csv_count = len(csv_data)
-    
     merged, all_drops, metrics = process_all(args)
     merged_fname = os.path.join(args.outdir, "merged_fix.gff")
     with open(merged_fname, 'w') as outF:
