@@ -302,29 +302,55 @@ def convert_tblout_to_gff(lines, args):
     return accepted, dropped
 
 def fix_braker3(lines, args):
+    """
+    Clean up GFF records produced by BRAKER3.
+
+    ‑ If a gene feature lacks `gene_biotype`, add `gene_biotype=protein_coding`.
+    ‑ Prepend `args.basename + "_"` to the values of ID/Parent/gene_id/transcript_id
+      (handles comma‑separated lists) unless the prefix is already present.
+    """
     new_lines = []
-    for line in lines:
-        line = line.rstrip("\n")
+
+    # local helper: add basename if needed
+    def _prefix(val: str) -> str:
+        if not args.basename or val in (None, "", "."):
+            return val
+        return ",".join(
+            tok if tok.startswith(f"{args.basename}_") else f"{args.basename}_{tok}"
+            for tok in (x.strip() for x in val.split(","))
+        )
+
+    for raw in lines:
+        line = raw.rstrip("\n")
         if not line.strip():
             continue
         if line.startswith("#"):
             new_lines.append(line)
             continue
+
         parts = line.split('\t')
         if len(parts) != 9:
             new_lines.append(line)
             continue
-        seq, src, feat, start, end, score, strand, phase, attr = parts
-        if feat.lower() == "gene":
-            if attr == ".":
-                attr = "gene_biotype=protein_coding;"
-            elif "gene_biotype=" not in attr:
-                if not attr.endswith(";"):
-                    attr += ";"
-                attr += "gene_biotype=protein_coding;"
-        new_lines.append("\t".join([seq, src, feat, start, end, score, strand, phase, attr]))
-    return new_lines
 
+        seq, src, feat, start, end, score, strand, phase, attr = parts
+        attrs = parse_attrs(attr) if attr and attr != "." else {}
+
+        # 1) ensure gene_biotype
+        if feat.lower() == "gene" and "gene_biotype" not in attrs:
+            attrs["gene_biotype"] = "protein_coding"
+
+        # 2) add basename prefix where relevant
+        for key in ("ID", "Parent", "gene_id", "transcript_id"):
+            if key in attrs:
+                attrs[key] = _prefix(attrs[key])
+
+        new_attr = reconst_attrs(attrs) if attrs else "."
+        new_lines.append("\t".join(
+            [seq, src, feat, start, end, score, strand, phase, new_attr]
+        ))
+
+    return new_lines
 def fix_gff_lines(lines, csv_fp, in_fmt, args):
     csvdata = load_csv(csv_fp)
     out = []
@@ -642,16 +668,15 @@ def cleanup_for_fix(lines):
     for line in lines:
         if line.startswith("#!gff-spec-version"):
             continue
+        # NEW: drop any GeSeq (or otherwise) source‑version header
+        if line.startswith("##source-version"):
+            continue
         if line.startswith("##gff-version"):
             if not version_found:
                 out.append("##gff-version 3")
                 version_found = True
-            else:
-                continue
-        elif line.startswith("#"):
-            out.append(line)
-        else:
-            out.append(line)
+            continue
+        out.append(line)
     final = []
     for line in out:
         if line.startswith("#"):
@@ -687,14 +712,22 @@ def sort_merge_gff_lines(lines):
             headers.append(l)
         else:
             data.append(l)
+
     rows = []
     for l in data:
         parts = l.split("\t")
         if len(parts) < 9:
             continue
+        # -- fix malformed coordinates (start > end) --
+        start_val, end_val = parts[3], parts[4]
+        if start_val.isdigit() and end_val.isdigit():
+            if int(start_val) > int(end_val):
+                parts[3], parts[4] = end_val, start_val  # swap
         rows.append(parts[:9])
+
     if not rows:
         return ["##gff-version 3"] + headers
+
     df = pd.DataFrame(rows, columns=['scaffold','source','feature','start','end','score','strand','phase','attributes'])
     df['start'] = pd.to_numeric(df['start'], errors='coerce')
     df = df.dropna(subset=['start'])
