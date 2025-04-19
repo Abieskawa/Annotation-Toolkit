@@ -3,12 +3,14 @@
 STAR ➜ StringTie versatile RNA‑seq pipeline
 
 Outputs (you may request any combination):
-  --transcript-fpkm    transcript_expression.tab  (t_data.ctab → sort 6, cut 6,12)
-  --transcript-counts  transcript_counts.tab      (t_data.ctab → sort 1, cut 1,2)
-  --gene-fpkm          gene_abundance_estimation.tab (abundance.tab → sort 1, cut 1,8)
-  --gene-tpm           gene_tpm.tab                  (abundance.tab → sort 1, cut 1,9)
-  --gene-counts        gene_counts.tab               (STAR ReadsPerGene.out.tab → sort 1, cut 1,2)
-Each mode is written to its own subdirectory under --out-dir.
+  --transcript-fpkm    per-sample transcript FPKM values
+  --gene-fpkm          per-sample gene FPKM values
+  --gene-tpm           per-sample gene TPM values
+  --transcript-counts  transcript count matrix via prepDE.py per sample
+  --gene-counts        gene count matrix via prepDE.py per sample
+  --map-only           perform mapping/filtering only, skip StringTie and prepDE
+  --merge-expression   merge per-mode tables into a single expression table
+Each output mode writes into its own directory under --out-dir; per-sample count matrices are placed at --out-dir.
 """
 import argparse, subprocess, glob, os, sys, math
 
@@ -24,31 +26,16 @@ def compute_genomeSAindex_nbases(fasta):
     return val if val < 14 else 14
 
 
-def run(cmd, *, use_shell=False, **kw):
-    """If use_shell=True run through /bin/bash so pipes/redirects work."""
+def run(cmd, *, cwd=None, use_shell=False, **kw):
+    """Run a command, printing it without signaling an error."""
     if use_shell:
         print('+', cmd)
-        subprocess.run(cmd, shell=True, check=True,
+        subprocess.run(cmd, shell=True, check=True, cwd=cwd,
                        executable='/bin/bash', **kw)
     else:
         print('+', ' '.join(cmd))
-        subprocess.run(cmd, check=True, **kw)
+        subprocess.run(cmd, check=True, cwd=cwd, **kw)
 
-def bg_path(outd, sample, fname):
-    """
-    Find Ballgown / abundance files regardless of layout.
-    1) <outd>/<sample>/<fname>             (# safest: per‑sample dir)
-    2) <outd>/<sample>.ballgown/<fname>    (# legacy StringTie layout)
-    3) <outd>/<fname>                      (# single‑sample run)
-    """
-    for c in (
-        os.path.join(outd, sample, fname),
-        os.path.join(outd, f"{sample}.ballgown", fname),
-        os.path.join(outd, fname),
-    ):
-        if os.path.exists(c):
-            return c
-    raise FileNotFoundError(f"{fname} not found for {sample}")
 
 def run_version(cmd):
     print('#', ' '.join(cmd))
@@ -60,158 +47,159 @@ def main():
     ap = argparse.ArgumentParser(description='STAR → StringTie multi‑mode pipeline')
     ap.add_argument('--reads-dir', required=True)
     ap.add_argument('--genome-fasta', required=True)
-    ap.add_argument('--annotation', required=True)
+    ap.add_argument('--annotation', required=True,
+                    help='GTF annotation file (GFF input is deprecated)')
     ap.add_argument('--out-dir', required=True)
     ap.add_argument('--threads', type=int, default=4)
-
+    ap.add_argument('--map-only', action='store_true',
+                    help='Only perform mapping and filtering; skip StringTie and prepDE')
     ap.add_argument('--transcript-fpkm',   action='store_true')
-    ap.add_argument('--transcript-counts', action='store_true')
     ap.add_argument('--gene-fpkm',         action='store_true')
     ap.add_argument('--gene-tpm',          action='store_true')
+    ap.add_argument('--transcript-counts', action='store_true')
     ap.add_argument('--gene-counts',       action='store_true')
     ap.add_argument('--merge-expression',  action='store_true')
     args = ap.parse_args()
 
-    if not any([args.transcript_fpkm, args.transcript_counts,
-                args.gene_fpkm, args.gene_tpm, args.gene_counts]):
-        sys.exit('Error: select at least one output mode')
+    # echo invocation
+    print('Command invoked:', ' '.join(sys.argv), flush=True)
 
-    star_index = os.path.join(args.out_dir, 'STAR_index')
-    align_dir  = os.path.join(args.out_dir, 'alignments'); os.makedirs(align_dir, exist_ok=True)
+    # require GTF only
+    if args.annotation.lower().endswith(('.gff', '.gff3')):
+        sys.exit('Error: GFF input is deprecated; please provide a GTF (*.gtf) file.')
 
+    # require at least one mode or map-only
+    if not args.map-only and not any([args.transcript_fpkm, args.gene_fpkm,
+                                      args.gene_tpm, args.transcript_counts,
+                                      args.gene_counts]):
+        sys.exit('Error: select at least one output mode or use --map-only')
+
+    star_index    = os.path.join(args.out_dir, 'STAR_index')
+    align_dir     = os.path.join(args.out_dir, 'alignments'); os.makedirs(align_dir, exist_ok=True)
+    stringtie_dir = os.path.join(args.out_dir, 'stringtie'); os.makedirs(stringtie_dir, exist_ok=True)
+
+    # create per-mode directories
     mode_dirs = {}
-    if args.transcript_fpkm:   mode_dirs['transcript_fpkm']   = os.path.join(args.out_dir,'transcript_fpkm')
-    if args.transcript_counts: mode_dirs['transcript_counts'] = os.path.join(args.out_dir,'transcript_counts')
-    if args.gene_fpkm:         mode_dirs['gene_fpkm']         = os.path.join(args.out_dir,'gene_fpkm')
-    if args.gene_tpm:          mode_dirs['gene_tpm']          = os.path.join(args.out_dir,'gene_tpm')
-    if args.gene_counts:       mode_dirs['gene_counts']       = os.path.join(args.out_dir,'gene_counts')
+    if args.transcript_fpkm:   mode_dirs['transcript_fpkm'] = os.path.join(args.out_dir, 'transcript_fpkm')
+    if args.gene_fpkm:         mode_dirs['gene_fpkm']       = os.path.join(args.out_dir, 'gene_fpkm')
+    if args.gene_tpm:          mode_dirs['gene_tpm']        = os.path.join(args.out_dir, 'gene_tpm')
     for d in mode_dirs.values(): os.makedirs(d, exist_ok=True)
 
-    ann = args.annotation; is_gff = ann.lower().endswith(('.gff','.gff3'))
-
-    for tool in [['STAR','--version'],['stringtie','--version'],['sort','--version']]:
-        run_version(tool)
+    # report tool versions
+    for tool in [['STAR','--version'], ['stringtie','--version'], ['sort','--version']]: run_version(tool)
     print()
 
+    # build STAR index if missing
     idx_file = os.path.join(star_index, 'SAindex')
-    print(f"looking for STAR index at {idx_file!r}: exists? {os.path.exists(idx_file)}", flush=True)
+    print(f"STAR index at {idx_file!r}: exists? {os.path.exists(idx_file)}", flush=True)
     if not os.path.exists(idx_file):
-        print("STAR index not found, building STAR index...")
+        print("Building STAR index...")
         os.makedirs(star_index, exist_ok=True)
-        idx = ['STAR','--runMode','genomeGenerate','--genomeFastaFiles',args.genome_fasta,
-               '--genomeSAindexNbases',str(compute_genomeSAindex_nbases(args.genome_fasta)),
-               '--runThreadN',str(args.threads),'--genomeDir',star_index,'--sjdbGTFfile',ann]
-        if is_gff:
-            idx += ['--sjdbGTFfeatureExon','exon','--sjdbGTFtagExonParentTranscript','Parent','--sjdbGTFtagExonParentGene','Parent']
-        run(idx)
+        cmd = [
+            'STAR','--runMode','genomeGenerate',
+            '--genomeFastaFiles', args.genome_fasta,
+            '--genomeSAindexNbases', str(compute_genomeSAindex_nbases(args.genome_fasta)),
+            '--runThreadN', str(args.threads),
+            '--genomeDir', star_index,
+            '--sjdbGTFfile', args.annotation
+        ]
+        run(cmd)
     else:
         print("STAR index exists, skipping build", flush=True)
 
-    # locate reads
-    r1_files = sorted(glob.glob(os.path.join(args.reads_dir,'*_1.cleaned.fastq*')))
-    samples=[]
+    # process each sample
+    r1_files = sorted(glob.glob(os.path.join(args.reads_dir, '*_1.cleaned.fastq*')))
+    samples = []
     for r1 in r1_files:
-        r2 = r1.replace('_1.cleaned.fastq.gz','_2.cleaned.fastq.gz') if r1.endswith('.gz') else r1.replace('_1.cleaned.fastq','_2.cleaned.fastq')
+        r2 = (r1.replace('_1.cleaned.fastq.gz','_2.cleaned.fastq.gz') if r1.endswith('.gz')
+              else r1.replace('_1.cleaned.fastq','_2.cleaned.fastq'))
         if not os.path.exists(r2):
-            print('skip',r1,'no R2',file=sys.stderr); continue
+            print('skip', r1, 'no R2', file=sys.stderr)
+            continue
         sample = os.path.basename(r1).split('_1.cleaned.fastq')[0].rstrip('.gz'); samples.append(sample)
 
-        # STAR mapping prefix and BAM path
+        # STAR alignment
         pref = os.path.join(align_dir, sample + '.')
         bam  = pref + 'Aligned.sortedByCoord.out.bam'
         if not os.path.exists(bam):
-            star_cmd = [
-                'STAR', '--runMode', 'alignReads', '--twopassMode', 'Basic',
+            cmd = [
+                'STAR','--runMode','alignReads','--twopassMode','Basic',
                 '--runThreadN', str(args.threads),
-                '--genomeDir', star_idx,
+                '--genomeDir', star_index,
                 '--readFilesIn', r1, r2,
-                '--outSAMtype', 'BAM', 'SortedByCoordinate',
-                '--quantMode', 'TranscriptomeSAM', 'GeneCounts',
+                '--outSAMtype','BAM','SortedByCoordinate',
+                '--quantMode','TranscriptomeSAM','GeneCounts',
                 '--outFileNamePrefix', pref,
-                '--outSAMstrandField', 'intronMotif'
+                '--outSAMstrandField','intronMotif'
             ]
-            if r1.endswith('.gz'):
-                star_cmd += ['--readFilesCommand', 'zcat']
-            run(star_cmd)
+            if r1.endswith('.gz'): cmd += ['--readFilesCommand','zcat']
+            run(cmd)
         else:
-            print(f"Skipping STAR for sample {sample}, BAM exists: {bam}")
+            print(f"Skipping STAR for {sample}, BAM exists", flush=True)
 
-        # ─── new: filter for properly paired reads ───
+        # filter for properly paired reads
         bam_flag2 = pref + 'flag2.bam'
-        samtools_cmd = [
-            'samtools', 'view', '-b', '-f', '2',
-            '-@', str(args.threads),
-            bam,
-            '-o', bam_flag2
-        ]
-        run(samtools_cmd)
-        # now use the filtered BAM for downstream steps
+        run(['samtools','view','-b','-f','2','-@', str(args.threads), bam, '-o', bam_flag2])
         bam = bam_flag2
 
-        rpg  = pref+'ReadsPerGene.out.tab'
+        # skip quantification if map-only
+        if args.map-only:
+            continue
 
-        # per‑mode work
-        for mode,outd in mode_dirs.items():
-            raw_dir   = os.path.join(stringtie_dir, mode, sample)
-            final_dir = os.path.join(final_root, sample)           # final tables remain under '<mode>/<sample>'
-            os.makedirs(raw_dir, exist_ok=True)
-            os.makedirs(final_dir, exist_ok=True)
-            # StringTie abundance modes
-            # run StringTie (raw outputs)
-            if mode != 'gene_counts':
-                abundance = os.path.join(raw_dir, 'abundance.tab')
-                st_cmd = [
-                    'stringtie', bam,
-                    '-G', args.annotation,
-                    '-o', os.path.join(raw_dir, 'stringtie.gtf'),
-                    '-p', str(args.threads),
-                    '-e',
-                    '-b', raw_dir,
-                    '-f', '0.15','-m','200','-a','10','-j','1','-c','2','-g','50','-M','0.95',
-                    '-A', abundance
-                ]
-                run(st_cmd)
+        # run StringTie
+        raw_dir = os.path.join(stringtie_dir, sample); os.makedirs(raw_dir, exist_ok=True)
+        cmd = [
+            'stringtie', bam, '-G', args.annotation,
+            '-o', os.path.join(raw_dir,'stringtie.gtf'),
+            '-p', str(args.threads), '-e', '-l', sample,
+            '-b', raw_dir, '-f','0.15','-m','200','-a','10',
+            '-j','1','-c','2','-g','50','-M','0.95',
+            '-A', os.path.join(raw_dir,'abundance.tab')
+        ]
+        run(cmd)
 
-            # Determine source file/columns
-            # extract tables into final_dir
-            if mode == 'transcript_fpkm':
-                src = os.path.join(raw_dir, sample, 't_data.ctab')    
-                run(f"sort -k6,6 {src} | cut -f6,12 > {os.path.join(final_dir, sample + '.transcript_fpkm.tab')}" , 
-                use_shell=True)
-            elif mode == 'transcript_counts':
-                src = os.path.join(raw_dir, sample, 't_data.ctab')   
-                run(f"sort -k1,1 {src} | cut -f1,2 > {os.path.join(final_dir, sample + '.transcript_counts.tab')}" , 
-                use_shell=True)
-            elif mode == 'gene_fpkm':
-                src = os.path.join(raw_dir, 'abundance.tab')
-                run(f"sort -k1,1 {src} | cut -f1,8 > {os.path.join(final_dir, sample + '.gene_fpkm.tab')}" , 
-                use_shell=True)
-            elif mode == 'gene_tpm':
-                src = os.path.join(raw_dir, 'abundance.tab')
-                run(f"sort -k1,1 {src} | cut -f1,9 > {os.path.join(final_dir, sample + '.gene_tpm.tab')}" , 
-                use_shell=True)
-            else:  # gene_counts
-                rpg = pref + 'ReadsPerGene.out.tab'
-                run(f"sort -k1,1 {rpg} | cut -f1,2 > {os.path.join(final_dir, sample + '.gene_counts.tab')}" , 
-                use_shell=True)
+        # extract per-sample FPKM/TPM tables
+        if args.transcript_fpkm:
+            src = os.path.join(raw_dir,'t_data.ctab')
+            out = os.path.join(mode_dirs['transcript_fpkm'], sample + '.transcript_fpkm.tab')
+            run(f"sort -k6,6 {src} | cut -f6,12 > {out}", use_shell=True)
+        if args.gene_fpkm:
+            src = os.path.join(raw_dir,'abundance.tab')
+            out = os.path.join(mode_dirs['gene_fpkm'], sample + '.gene_fpkm.tab')
+            run(f"sort -k1,1 {src} | cut -f1,8 > {out}", use_shell=True)
+        if args.gene_tpm:
+            src = os.path.join(raw_dir,'abundance.tab')
+            out = os.path.join(mode_dirs['gene_tpm'], sample + '.gene_tpm.tab')
+            run(f"sort -k1,1 {src} | cut -f1,9 > {out}", use_shell=True)
 
-    # merge for MOLAS
+                # run prepDE for this sample's counts
+        if args.gene_counts or args.transcript_counts:
+            prepde_cmd = ['prepDE.py', '-i', raw_dir]
+            if args.gene_counts:
+                prepde_cmd += ['-g', os.path.join(mode_dirs['gene_counts'], 'gene_count_matrix.csv')]
+            if args.transcript_counts:
+                prepde_cmd += ['-t', os.path.join(mode_dirs['transcript_counts'], 'transcript_count_matrix.csv')]
+            run(prepde_cmd)
+
+    # merge per-mode tables if requested
     if args.merge_expression:
-        table = os.path.join(args.out_dir,'expression_table.tab')
-        with open(table,'w') as out: out.write('ID\t'+'\t'.join(samples)+'\n')
-        collect={}
-        for mode,d in mode_dirs.items():
+        table = os.path.join(args.out_dir, 'expression_table.tab')
+        with open(table, 'w') as fh:
+            fh.write('ID\t' + '\t'.join(samples) + '\n')
+        collect = {}
+        for mode, d in mode_dirs.items():
             for s in samples:
-                fn=os.path.join(d,f'{s}.{mode}.tab')
+                fn = os.path.join(d, f"{s}.{mode}.tab")
                 if not os.path.exists(fn): continue
                 with open(fn) as fh:
                     next(fh)
                     for ln in fh:
-                        gid,val=ln.strip().split('\t',1)
-                        collect.setdefault(gid,{})[s]=val
-        with open(table,'a') as out:
+                        gid, val = ln.strip().split('\t',1)
+                        collect.setdefault(gid, {})[s] = val
+        with open(table,'a') as fh:
             for gid in sorted(collect):
-                out.write(gid+'\t'+'\t'.join(collect[gid].get(s,'.') for s in samples)+'\n')
+                line = gid + '\t' + '\t'.join(collect[gid].get(s,'.') for s in samples)
+                fh.write(line + '\n')
 
 if __name__=='__main__':
     main()
