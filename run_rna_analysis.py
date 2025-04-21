@@ -28,11 +28,11 @@ def compute_genomeSAindex_nbases(fasta):
 
 def run(cmd, *, cwd=None, use_shell=False, **kw):
     if use_shell:
-        print('+', cmd, flush=True)
+        print(cmd, flush=True)
         subprocess.run(cmd, shell=True, check=True, cwd=cwd,
                        executable='/bin/bash', **kw)
     else:
-        print('+', ' '.join(cmd), flush=True)
+        print(' '.join(cmd), flush=True)
         subprocess.run(cmd, check=True, cwd=cwd, **kw)
 
 
@@ -63,7 +63,7 @@ def main():
     print('Command invoked:', ' '.join(sys.argv), flush=True)
 
     if args.annotation.lower().endswith(('.gff', '.gff3')):
-        sys.exit('Error: GFF input is deprecated; please provide a GTF (*.gtf) file.')
+        sys.exit('Error: GFF input is not suggested to run STAR; please provide a GTF (*.gtf) file.')
 
     if not args.map_only and not any([args.transcript_fpkm, args.gene_fpkm,
                                       args.gene_tpm, args.transcript_counts,
@@ -82,12 +82,13 @@ def main():
     if args.gene_counts:       mode_dirs['gene_counts']       = os.path.join(args.out_dir, 'gene_counts')
     for d in mode_dirs.values(): os.makedirs(d, exist_ok=True)
 
-    for tool in [['STAR','--version'], ['stringtie','--version'], ['sort','--version']]:
+    for tool in [['STAR','--version'], ['stringtie','--version'], ['samtools','--version'], ['sort','--version']]:
         run_version(tool)
     print(flush=True)
 
     idx_file = os.path.join(star_index, 'SAindex')
-    print(f"STAR index at {idx_file!r}: exists? {os.path.exists(idx_file)}", flush=True)
+    if os.path.exists(idx_file):
+        print(f"STAR index exists.", flush=True)
     if not os.path.exists(idx_file):
         cmd = [
             'STAR','--runMode','genomeGenerate',
@@ -110,9 +111,9 @@ def main():
     samples = []
     for r1 in r1_files:
         r2 = r1.replace('_1.cleaned', '_2.cleaned')
-        if not os.path.exists(r2):
-            print('skip', r1, 'no R2', file=sys.stderr, flush=True)
-            continue
+        paired = os.path.exists(r2)
+        if not paired:
+            print(f"Single-end sample for {sample}, no R2 found: {r2}", flush=True)
         sample = os.path.basename(r1).split('_1.cleaned')[0]
         samples.append(sample)
 
@@ -123,12 +124,16 @@ def main():
                 'STAR','--runMode','alignReads','--twopassMode','Basic',
                 '--runThreadN', str(args.threads),
                 '--genomeDir', star_index,
-                '--readFilesIn', r1, r2,
                 '--outSAMtype','BAM','SortedByCoordinate',
                 '--quantMode','TranscriptomeSAM','GeneCounts',
                 '--outFileNamePrefix', pref,
                 '--outSAMstrandField','intronMotif'
             ]
+            if paired:
+                cmd += ['--readFilesIn', r1, r2]
+            else:
+                cmd += ['--readFilesIn', r1]
+
             if r1.endswith('.gz'):
                 cmd += ['--readFilesCommand','zcat']
             print(f"Running STAR alignment for {sample} with command:", ' '.join(cmd), flush=True)
@@ -140,15 +145,14 @@ def main():
         samtools_cmd = ['samtools','view','-b','-f','2','-@', str(args.threads), bam, '-o', bam_flag2]
         print('Filtering BAM with command:', ' '.join(samtools_cmd), flush=True)
         run(samtools_cmd)
-        bam = bam_flag2
-
+        
         if args.map_only:
             continue
 
         # run StringTie
         raw_dir = os.path.join(stringtie_dir, sample); os.makedirs(raw_dir, exist_ok=True)
         cmd = [
-            'stringtie', bam, '-G', args.annotation,
+            'stringtie', bam_flag2, '-G', args.annotation,
             '-o', os.path.join(raw_dir,'stringtie.gtf'),
             '-p', str(args.threads), '-e', '-l', sample,
             '-b', raw_dir, '-f','0.15','-m','200','-a','10',
@@ -190,9 +194,7 @@ def main():
             run(prepde_cmd)
             print("Successfully generated count matrices", flush=True)
         except subprocess.CalledProcessError as e:
-            print(f"Warning: prepDE.py failed with error code {e.returncode}", file=sys.stderr, flush=True)
-            print("This is likely due to missing transcripts or GTF parsing issues.", file=sys.stderr, flush=True)
-            print("Continuing with the rest of the pipeline...", file=sys.stderr, flush=True)
+            sys.exit(e.returncode)
 
     # merge per-mode tables if requested
     if args.merge_expression:
@@ -210,9 +212,24 @@ def main():
                     if not os.path.exists(fname):
                         continue
                     with open(fname) as fh:
-                        next(fh)
-                        for ln in fh:
-                            id_, val = ln.strip().split('	',1)
+                        # read first line and test if it's data or a header
+                        first = fh.readline()
+                        fields = first.strip().split('\t')
+                        is_data = False
+                        for v in fields[1:]:
+                            try:
+                                float(v)
+                                is_data = True
+                                break
+                            except ValueError:
+                                continue
+                        if is_data:
+                            lines = [first] + fh.readlines()
+                        except ValueError:
+                            # header present, skip
+                            lines = fh
+                        for ln in lines:
+                            id_, val = ln.strip().split('\t',1)
                             data.setdefault(id_, {})[col] = val
         # gene counts matrix
         if args.gene_counts:
@@ -248,7 +265,7 @@ def main():
         with open(table, 'w') as fh:
             fh.write('ID	' + '\t'.join(cols) + '\n')
             for id_ in sorted(data):
-                row = [data[id_].get(c, '0') for c in cols]
+                row = [data[id_].get(c, '.') for c in cols]
                 fh.write(id_ + '\t' + '\t'.join(row) + '\n')
 
 if __name__=='__main__':
