@@ -184,15 +184,24 @@ def main():
                 print('Mapping entry:', sample, '->', gtf_file, flush=True)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         prepde_script = os.path.join(script_dir, 'prepDE.py')
-        prepde_cmd = ['python3', '-W', 'ignore::SyntaxWarning', prepde_script,'-i', mapping_file]
+        prepde_cmd = ['python3', '-W', 'ignore::SyntaxWarning', prepde_script, '-i', mapping_file]
         if args.gene_counts:
-            prepde_cmd += ['-g', os.path.join(args.out_dir, 'gene_count_matrix.csv')]
+            gene_matrix = os.path.join(mode_dirs['gene_counts'], 'gene_count_matrix.csv')
+            prepde_cmd += ['-g', gene_matrix]
         if args.transcript_counts:
-            prepde_cmd += ['-t', os.path.join(args.out_dir, 'transcript_count_matrix.csv')]
+            trans_matrix = os.path.join(mode_dirs['transcript_counts'], 'transcript_count_matrix.csv')
+            prepde_cmd += ['-t', trans_matrix]
         print('Running prepDE command:', ' '.join(prepde_cmd), flush=True)
         try:
             run(prepde_cmd)
             print("Successfully generated count matrices", flush=True)
+            # create sorted copies
+            if args.gene_counts:
+                sorted_gene_counts = os.path.join(mode_dirs['gene_counts'], 'gene_count_matrix.sorted.csv')
+                run(f"head -n1 {gene_matrix} > {sorted_gene_counts}; tail -n+2 {gene_matrix} | sort -t, -k1,1 >> {sorted_gene_counts}", use_shell=True)
+            if args.transcript_counts:
+                sorted_trans_counts = os.path.join(mode_dirs['transcript_counts'], 'transcript_count_matrix.sorted.csv')
+                run(f"head -n1 {trans_matrix} > {sorted_trans_counts}; tail -n+2 {trans_matrix} | sort -t, -k1,1 >> {sorted_trans_counts}", use_shell=True)
         except subprocess.CalledProcessError as e:
             sys.exit(e.returncode)
 
@@ -212,7 +221,6 @@ def main():
                     if not os.path.exists(fname):
                         continue
                     with open(fname) as fh:
-                        # read first line and test if it's data or a header
                         first = fh.readline()
                         fields = first.strip().split('\t')
                         is_data = False
@@ -225,32 +233,33 @@ def main():
                                 continue
                         if is_data:
                             lines = [first] + fh.readlines()
-                        except ValueError:
-                            # header present, skip
+                        else:
                             lines = fh
                         for ln in lines:
                             id_, val = ln.strip().split('\t',1)
                             data.setdefault(id_, {})[col] = val
         # gene counts matrix
         if args.gene_counts:
-            gfile = os.path.join(args.out_dir, 'gene_count_matrix.csv')
-            if os.path.exists(gfile):
-                with open(gfile) as fh:
-                    hdr = next(fh).strip().split(',',1)[1].split(',') if False else next(fh).strip().split(',')[1:]
+            if os.path.exists(sorted_gene_counts):
+                with open(sorted_gene_counts) as fh:
+                    header_line = next(fh).strip()
+                    hdr = header_line.split(',')[1:]
                     for sample in hdr:
                         col = f"{sample}.g.count"
                         cols.append(col)
                     for ln in fh:
                         parts = ln.strip().split(',')
                         id_ = parts[0]
+                        if id_.startswith("<class"):
+                            print(f"DEBUG: merging phantom ID '{id_}' from file {sorted_gene_counts}", file=sys.stderr)
+                            continue
                         for sample, val in zip(hdr, parts[1:]):
                             col = f"{sample}.g.count"
                             data.setdefault(id_, {})[col] = val
         # transcript counts matrix
         if args.transcript_counts:
-            tfile = os.path.join(args.out_dir, 'transcript_count_matrix.csv')
-            if os.path.exists(tfile):
-                with open(tfile) as fh:
+            if os.path.exists(sorted_trans_counts):
+                with open(sorted_trans_counts) as fh:
                     hdr = next(fh).strip().split(',')[1:]
                     for sample in hdr:
                         col = f"{sample}.t.count"
@@ -263,10 +272,11 @@ def main():
                             data.setdefault(id_, {})[col] = val
         # write merged table
         with open(table, 'w') as fh:
-            fh.write('ID	' + '\t'.join(cols) + '\n')
+            fh.write('ID	' + '	'.join(cols) + '\n')
             for id_ in sorted(data):
                 row = [data[id_].get(c, '.') for c in cols]
                 fh.write(id_ + '\t' + '\t'.join(row) + '\n')
+    print('Everything Finished.')
 
 if __name__=='__main__':
     main()
