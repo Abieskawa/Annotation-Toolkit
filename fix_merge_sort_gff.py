@@ -504,7 +504,7 @@ def fix_geseq_lines(lines, args):
         …) are preserved (plus a single leading '##gff-version 3').
       • `region` / `source` feature lines are copied verbatim.
       • Every *individual* GeSeq record (distinguished by its original ID if
-        present, otherwise by gene name + coordinates) becomes its own
+        present, otherwise by gene name + coordinates) becomes its own
         gene‑level hierarchy — no collapsing when two hits share the same
         `gene=` tag.
     """
@@ -541,7 +541,7 @@ def fix_geseq_lines(lines, args):
 
         orig_id = attrs.get("ID")
         # unique key: prefer original ID; fall back to gene + coords
-        key = orig_id if orig_id else f"{gene_name}:{start}-{end}:{strand}"
+        key = orig_id if orig_id else f"{gene_name}-{start}"
 
         if feat_lower == "gene":
             gene_groups.setdefault(key, {})["gene"] = {
@@ -549,7 +549,7 @@ def fix_geseq_lines(lines, args):
                 "strand": strand, "attrs": attrs
             }
         elif feat_lower in ("trna", "mrna", "rrna", "cds"):
-            gene_groups.setdefault(key, {})["transcript"] = {
+            gene_groups.setdefault(key, {})["child"] = {
                 "seq": seq, "source": source, "feature": feature,
                 "start": start, "end": end, "strand": strand, "attrs": attrs
             }
@@ -575,13 +575,14 @@ def fix_geseq_lines(lines, args):
                        if args.basename else
                        f"{gene_rec['seq']}_gene_{gene_name}_{gene_rec['start']}")
 
-        gene_biotype = gene_attrs.get("gene_biotype", "tRNA")
+        gene_biotype = gene_attrs.get("gene_biotype", "NA")
+        print(f"Gene {orig_gene_id} does not have gene_biotype! Check it!", flush=True)
         g_attrs = {"ID": gene_id, "Name": gene_name,
                    "gene_id": gene_id, "gene_biotype": gene_biotype}
 
         output.append("\t".join([
             gene_rec["seq"], gene_rec["source"], "gene",
-            gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
+            gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], ".",
             reconst_attrs(g_attrs)
         ]))
 
@@ -590,24 +591,24 @@ def fix_geseq_lines(lines, args):
                          if args.basename else
                          f"{gene_rec['seq']}_transcript_{gene_name}_{gene_rec['start']}")
 
-        if "transcript" in group:
-            tr = group["transcript"]
+        if "child" in group:
+            ch = group["child"]
             t_feature = ("mRNA" if gene_biotype.lower() == "protein_coding"
-                         else tr["feature"])
+                         else ch["feature"])
             output.append("\t".join([
-                tr["seq"], tr["source"], t_feature,
-                tr["start"], tr["end"], ".", tr["strand"], "0",
+                ch["seq"], ch["source"], t_feature,
+                ch["start"], ch["end"], ".", ch["strand"], ".",
                 reconst_attrs({"ID": transcript_id, "Parent": gene_id})
             ]))
             if gene_biotype.lower() == "protein_coding":
                 output.append("\t".join([
-                    tr["seq"], tr["source"], "CDS",
-                    tr["start"], tr["end"], ".", tr["strand"], "0",
+                    ch["seq"], ch["source"], "CDS",
+                    ch["start"], ch["end"], ".", ch["strand"], "0",
                     reconst_attrs({"ID": f"{transcript_id}.cds1",
                                    "Parent": transcript_id})
                 ]))
             exon_seq, exon_start, exon_end, exon_strand = (
-                tr["seq"], tr["start"], tr["end"], tr["strand"])
+                ch["seq"], ch["start"], ch["end"], ch["strand"])
         else:
             # create synthetic transcript using gene coords
             t_feature = "mRNA" if gene_biotype.lower() == "protein_coding" else "tRNA"
