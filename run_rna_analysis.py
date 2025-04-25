@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STAR ➔ StringTie versatile RNA seq pipeline
+STAR ⟩ StringTie versatile RNA seq pipeline
 
 Outputs (you may request any combination):
   --transcript-fpkm    per-sample transcript FPKM values
@@ -9,7 +9,7 @@ Outputs (you may request any combination):
   --transcript-counts  transcript count matrix via prepDE.py per sample
   --gene-counts        gene count matrix via prepDE.py per sample
   --map-only           perform mapping and filtering only; skip StringTie and prepDE
-  --merge-expression   merge per-mode tables into a single expression table
+  --merge-expression   merge and process per-mode tables into a single expression table (FPKM/TPM/counts)
 Each output mode writes into its own directory under --out-dir; per-sample count matrices are placed at --out-dir.
 """
 import argparse, subprocess, glob, os, sys, math
@@ -112,9 +112,9 @@ def main():
     for r1 in r1_files:
         r2 = r1.replace('_1.cleaned', '_2.cleaned')
         paired = os.path.exists(r2)
+        sample = os.path.basename(r1).split('_1.cleaned')[0]    
         if not paired:
             print(f"Single-end sample for {sample}, no R2 found: {r2}", flush=True)
-        sample = os.path.basename(r1).split('_1.cleaned')[0]
         samples.append(sample)
 
         pref = os.path.join(align_dir, sample + '.')
@@ -205,22 +205,16 @@ def main():
         except subprocess.CalledProcessError as e:
             sys.exit(e.returncode)
 
-    # merge per-mode tables if requested
+    # merge per-option outputs into tables
     if args.merge_expression:
-        table = os.path.join(args.out_dir, 'expression.table')
-        data = {}
-        cols = []
-        # per-sample FPKM/TPM
-        for mode, suffix in [('gene_fpkm','.g.fpkm'), ('gene_tpm','.g.tpm'), ('transcript_fpkm','.t.fpkm')]:
-            if getattr(args, mode):
-                mode_dir = os.path.join(args.out_dir, mode)
-                for sample in samples:
-                    fname = os.path.join(mode_dir, f"{sample}.{mode}.tab")
-                    col = f"{sample}{suffix}"
-                    cols.append(col)
-                    if not os.path.exists(fname):
-                        continue
-                    with open(fname) as fh:
+        # transcript FPKM
+        if args.transcript_fpkm:
+            suffix = '.t.fpkm'
+            ids, expr = [], {}
+            for sample in samples:
+                fn = os.path.join(mode_dirs['transcript_fpkm'], f"{sample}.transcript_fpkm.tab")
+                if os.path.exists(fn):
+                    with open(fn) as fh:
                         first = fh.readline()
                         fields = first.strip().split('\t')
                         is_data = False
@@ -230,52 +224,109 @@ def main():
                                 is_data = True
                                 break
                             except ValueError:
-                                continue
-                        if is_data:
-                            lines = [first] + fh.readlines()
-                        else:
-                            lines = fh
-                        for ln in lines:
-                            id_, val = ln.strip().split('\t',1)
-                            data.setdefault(id_, {})[col] = val
-        # gene counts matrix
-        if args.gene_counts:
-            if os.path.exists(sorted_gene_counts):
-                with open(sorted_gene_counts) as fh:
-                    header_line = next(fh).strip()
-                    hdr = header_line.split(',')[1:]
-                    for sample in hdr:
-                        col = f"{sample}.g.count"
-                        cols.append(col)
-                    for ln in fh:
-                        parts = ln.strip().split(',')
-                        id_ = parts[0]
-                        if id_.startswith("<class"):
-                            print(f"DEBUG: merging phantom ID '{id_}' from file {sorted_gene_counts}", file=sys.stderr)
-                            continue
-                        for sample, val in zip(hdr, parts[1:]):
-                            col = f"{sample}.g.count"
-                            data.setdefault(id_, {})[col] = val
-        # transcript counts matrix
-        if args.transcript_counts:
-            if os.path.exists(sorted_trans_counts):
-                with open(sorted_trans_counts) as fh:
-                    hdr = next(fh).strip().split(',')[1:]
-                    for sample in hdr:
-                        col = f"{sample}.t.count"
-                        cols.append(col)
-                    for ln in fh:
-                        parts = ln.strip().split(',')
-                        id_ = parts[0]
-                        for sample, val in zip(hdr, parts[1:]):
-                            col = f"{sample}.t.count"
-                            data.setdefault(id_, {})[col] = val
-        # write merged table
-        with open(table, 'w') as fh:
-            fh.write('ID	' + '	'.join(cols) + '\n')
-            for id_ in sorted(data):
-                row = [data[id_].get(c, '.') for c in cols]
-                fh.write(id_ + '\t' + '\t'.join(row) + '\n')
+                                pass
+                        lines = [first] + fh.readlines() if is_data else fh.readlines()
+                    for ln in lines:
+                        id_, v = ln.strip().split('\t')
+                        expr.setdefault(id_, {})[sample+suffix] = v
+                        if id_ not in ids: ids.append(id_)
+            out = os.path.join(args.out_dir, 'transcript_fpkm.table')
+            with open(out, 'w') as fh:
+                fh.write('ID\t' + '\t'.join([s+suffix for s in samples]) + '\n')
+                for id_ in sorted(ids):
+                    fh.write(id_ + '\t' + '\t'.join(expr[id_].get(s+suffix, '.') for s in samples) + '\n')
+        # gene FPKM
+        if args.gene_fpkm:
+            suffix = '.g.fpkm'
+            ids, expr = [], {}
+            for sample in samples:
+                fn = os.path.join(mode_dirs['gene_fpkm'], f"{sample}.gene_fpkm.tab")
+                if os.path.exists(fn):
+                    with open(fn) as fh:
+                        first = fh.readline()
+                        fields = first.strip().split('\t')
+                        is_data = False
+                        for v in fields[1:]:
+                            try:
+                                float(v)
+                                is_data = True
+                                break
+                            except ValueError:
+                                pass
+                        lines = [first] + fh.readlines() if is_data else fh.readlines()
+                    for ln in lines:
+                        id_, v = ln.strip().split('\t')
+                        expr.setdefault(id_, {})[sample+suffix] = v
+                        if id_ not in ids: ids.append(id_)
+            out = os.path.join(args.out_dir, 'gene_fpkm.table')
+            with open(out, 'w') as fh:
+                fh.write('ID\t' + '\t'.join([s+suffix for s in samples]) + '\n')
+                for id_ in sorted(ids):
+                    fh.write(id_ + '\t' + '\t'.join(expr[id_].get(s+suffix, '.') for s in samples) + '\n')
+        # gene TPM
+        if args.gene_tpm:
+            suffix = '.g.tpm'
+            ids, expr = [], {}
+            for sample in samples:
+                fn = os.path.join(mode_dirs['gene_tpm'], f"{sample}.gene_tpm.tab")
+                if os.path.exists(fn):
+                    with open(fn) as fh:
+                        first = fh.readline()
+                        fields = first.strip().split('\t')
+                        is_data = False
+                        for v in fields[1:]:
+                            try:
+                                float(v)
+                                is_data = True
+                                break
+                            except ValueError:
+                                pass
+                        lines = [first] + fh.readlines() if is_data else fh.readlines()
+                    for ln in lines:
+                        id_, v = ln.strip().split('\t')
+                        expr.setdefault(id_, {})[sample+suffix] = v
+                        if id_ not in ids: ids.append(id_)
+            out = os.path.join(args.out_dir, 'gene_tpm.table')
+            with open(out, 'w') as fh:
+                fh.write('ID\t' + '\t'.join([s+suffix for s in samples]) + '\n')
+                for id_ in sorted(ids):
+                    fh.write(id_ + '\t' + '\t'.join(expr[id_].get(s+suffix, '.') for s in samples) + '\n')  # ensure sort by first column
+        # gene counts
+        if args.gene_counts and 'sorted_gene_counts' in locals():
+            gene_cols, gene_data = [], {}
+            with open(sorted_gene_counts) as fh:
+                hdr = next(fh).strip().split(',')[1:]
+                for sample in hdr:
+                    gene_cols.append(sample+'.g.count')
+                for ln in fh:
+                    parts = ln.strip().split(',')
+                    id_ = parts[0]
+                    if id_.startswith('<class'): continue
+                    for sample, val in zip(hdr, parts[1:]):
+                        gene_data.setdefault(id_, {})[sample+'.g.count'] = val
+            out = os.path.join(args.out_dir, 'gene_counts.table')
+            with open(out, 'w') as fh:
+                fh.write('ID\t' + '\t'.join(gene_cols) + '\n')
+                for id_ in sorted(gene_data):
+                    fh.write(id_ + '\t' + '\t'.join(gene_data[id_].get(c) or '.' for c in gene_cols) + '\n')
+        # transcript counts
+        if args.transcript_counts and 'sorted_trans_counts' in locals():
+            t_cols, t_data = [], {}
+            with open(sorted_trans_counts) as fh:
+                hdr = next(fh).strip().split(',')[1:]
+                for sample in hdr:
+                    t_cols.append(sample+'.t.count')
+                for ln in fh:
+                    parts = ln.strip().split(',')
+                    id_ = parts[0]
+                    for sample, val in zip(hdr, parts[1:]):
+                        t_data.setdefault(id_, {})[sample+'.t.count'] = val
+            out = os.path.join(args.out_dir, 'transcript_counts.table')
+            with open(out, 'w') as fh:
+                fh.write('ID\t' + '\t'.join(t_cols) + '\n')
+                for id_ in sorted(t_data):
+                    fh.write(id_ + '\t' + '\t'.join(t_data[id_].get(c) or '.' for c in t_cols) + '\n')
+
     print('Everything Finished.')
 
 if __name__=='__main__':
