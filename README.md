@@ -218,5 +218,10 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 ```
 
 ## Citation and the tools used in this pipeline
-### Repeat Annotation
-[TETools (v1.89.2)](https://github.com/Dfam-consortium/TETools)
+### Repeat Annotation/masking
+[TETools (v1.89.2)](https://github.com/Dfam-consortium/TETools) 
+[TRF (v4.09)](https://github.com/Benson-Genomics-Lab/TRF)
+[bedtools (v2.31.1)](https://github.com/arq5x/bedtools2)
+
+### RNAseq analysis
+[stringtie (v2.2.3), prepDE.py](https://github.com/gpertea/stringtie) Note: I used the prepDE.py in that repository.
