@@ -218,3 +218,5 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 ```
 
 ## Citation and the tools used in this pipeline
+### Repeat Annotation
+TETools (v1.89.2) (https://github.com/Dfam-consortium/TETools)
