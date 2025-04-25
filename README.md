@@ -224,4 +224,4 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 [bedtools (v2.31.1)](https://github.com/arq5x/bedtools2)
 
 ### RNAseq analysis
-[stringtie (v2.2.3), prepDE.py](https://github.com/gpertea/stringtie) Note: I used the prepDE.py in that repository.
+[stringtie (v2.2.3), prepDE.py](https://github.com/gpertea/stringtie) Note: prepDE.py3 in that repository was used here.
