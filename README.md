@@ -66,6 +66,12 @@ python scripts/summarize_buildSummary.py repeat_report_nuclear24.txt
 ## Run mitochondria Annotation with mitos
 NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi) 
 Ex. fish genetic code: 2, asian hard clam genetic code: 5
+Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, GeSeq, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.
+
+*GeSeq*: output gff and also utilized the available reference seq, but it cannot select third-party tools (ex. tRNAscan-se), user can only select the best by themselves.
+*mitoZ*: It can manually add the reference sequence, but output only genebank file, not gff or gtf.
+*mitos*: use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.
+
 Version: runmitos.py 2.1.9
 ```
 runmitos.py -i {input mitochondria genome} -c {code for different species} -R ../MITOS2-refdata/ -r refseq89m -o 06_mitos/ --best --debug
@@ -116,12 +122,12 @@ python ../Annotation-Toolkit/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish
 
 gffread -T 07_merge_gff/merged_fix.gff -o 07_merge_gff/merged_fix_tran.gtf
 
-python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r 07_merge_gff/merged_fix_tran.gtf -p beltfish_v2 -a combined
+python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito_adjusted.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combined -v --pep_mitos 06_mitos_adjusted/result.faa --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_hard_clam_MOLAS_input
 
 #-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
-#if you want to skip any chr/scaffold, use --exclude_scaffolds
+#if you want to skip any chr/scaffold, use --split_scaffolds
 nohup python ../Annotation-Toolkit/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f 04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -b beltfish_v2 -o 07_merge_gff/ -p 07_renamed_braker3/braker_rename
-d.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output --exclude_scaffolds MT > run_eva_combined.log 2>&1 &
+d.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output --split_scaffolds MT > run_eva_combined.log 2>&1 &
 ```
 
 ## Run gtf2gff
@@ -135,7 +141,7 @@ perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --gff3
 In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the regulation of gff file version is different version, please check my source code before applying my source code. 
 User can also evaluate the renamed gff instead.
 ```
-nohup python ../Annotation-Toolkit/eva_annotation.py psa -g 06_braker3_v3/braker.gff -f 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta -b asian_hard_clam_v3 -o 06_braker3_v3 -p 06_braker3_v3/braker.aa --busco_lineage mollusca_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/asian_hard_clam/ --omark_dir omark_omamer_output > run_eva_braker3_v3.log 2>&1 &
+nohup python ../Annotation-Toolkit/eva_annotation.py structural -g 06_braker3_v3/braker.gff -f 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta -b asian_hard_clam_v3 -o 06_braker3_v3 -p 06_braker3_v3/braker.aa --busco_lineage mollusca_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/asian_hard_clam/ --omark_dir omark_omamer_output > run_eva_braker3_v3.log 2>&1 &
 ```
 ## Prepare protein before running Functional annotation
 Rename the output with specified prefix (prefix_{entry name}) and rename protein sequence and remove its stop codon.   
@@ -148,13 +154,6 @@ perl ../Annotation-Toolkit/gtf2gff.pl <braker_renamed.gtf --out=braker_renamed.g
 ## Merge the structural annotation result
 ```
 python ../Annotation-Toolkit/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
-```
-
-## Generate MOLAS input fasta and reproduce protein fasta file
-```
-python ../Annotation-Toolkit/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito_adjusted.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combi
-ned -v --pep_mitos 06_mitos_adjusted/result.faa --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_har
-d_clam_MOLAS_input
 ```
 
 ## Prepare NR protein database
@@ -217,3 +216,5 @@ python scripts/repeatout2circos.py {RepeatMasker Output, ex.beltfish_genome_1.fa
 
 docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -outputdir /data
 ```
+
+## Citation and the tools used in this pipeline
