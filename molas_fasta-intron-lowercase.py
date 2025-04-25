@@ -225,114 +225,84 @@ def translate_geseq_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
     """
     Translate CDS FASTA produced by gffread for GeSeq annotations.
     Uses gene names from gene FASTA file and adds .p to create protein IDs.
-    Reports which sequences have issues like partial codons.
+    Only sequences whose core ID matches an entry in gene_mapping are processed.
+    Reports and trims sequences with partial codons.
     """
-    # First, extract all gene names from the gene FASTA file
+    import re
+    from Bio.Seq import Seq
+    import sys
+
+    # 1) extract all gene names from the gene FASTA file
     gene_names = []
     with open(gene_fa) as f:
         for line in f:
             if line.startswith('>'):
-                gene_name = line.strip()[1:]  # Remove '>' character
-                gene_names.append(gene_name)
-    
-    # Create a mapping from transcript IDs to gene names based on gene name patterns
+                gene_names.append(line.strip()[1:])  # drop '>'
+
+    # 2) build a mapping from core gene name to full gene name
+    #    e.g. core "ND4" → full "M_tai_gene-blatx_ND4_1"
     gene_mapping = {}
     for gene in gene_names:
-        # Extract the core part like "ND4" from names like "M_tai_gene-blatx_ND4_1"
-        match = re.search(r'gene-blatx_([^_]+)', gene)
-        if match:
-            core_name = match.group(1)
-            gene_mapping[core_name.upper()] = gene  # Store in uppercase for case-insensitive matching
-    
-    # Now translate CDS and map to gene names
+        m = re.search(r'gene-blatx_([^_]+)', gene)
+        if m:
+            gene_mapping[m.group(1).upper()] = gene
+
+    # 3) translate only those CDS records that map
     with open(cds_fa) as fh, open(pep_out, "w") as out:
         hdr, seq = None, []
         for ln in fh:
             if ln.startswith(">"):
-                if hdr:
-                    # Try to extract gene identifier from header
-                    try:
-                        # Pattern: >PREFIX_transcript_GENE_COORDINATES.cds1
-                        # Extract just the GENE part
-                        gene_id = re.search(r'_transcript_([^_]+)_', hdr).group(1)
-                    except (IndexError, AttributeError):
-                        gene_id = hdr.strip()
-                    
-                    # Find matching gene name from gene FASTA
-                    matched_gene = None
-                    for key, value in gene_mapping.items():
-                        if key in gene_id.upper():
-                            matched_gene = value
-                            break
-                    
-                    # If no match found, use the extracted gene ID
-                    if not matched_gene:
-                        matched_gene = gene_id
-                    
-                    # Handle the partial codon issue
-                    full_seq = "".join(seq)
-                    
-                    # Check if sequence has partial codons and report it
-                    if len(full_seq) % 3 != 0:
-                        print(f"WARNING: Partial codon detected in sequence {hdr}")
-                        print(f"Sequence length: {len(full_seq)} (not divisible by 3)")
-                        remaining = len(full_seq) % 3
-                        print(f"Trimming {remaining} nucleotide(s) from the end")
-                        trimmed_seq = full_seq[:len(full_seq) - remaining]
-                    else:
-                        trimmed_seq = full_seq
-                    
-                    try:
-                        prot = str(Seq(trimmed_seq).translate(table=table,
-                                                         to_stop=True,
-                                                         cds=False))
-                        # Format as GENE.p
-                        out.write(f">{matched_gene}.p\n{prot}\n")
-                    except Exception as e:
-                        print(f"ERROR translating sequence {hdr}: {str(e)}")
-                        print(f"Sequence: {trimmed_seq[:50]}... (showing first 50 chars)")
-                
-                hdr, seq = ln[1:].strip(), []
+                # process the previous record
+                if hdr is not None:
+                    # core ID before the first dot, e.g. "M_tai_g9894"
+                    core_id = hdr.split('.', 1)[0]
+                    matched = next(
+                        (full for core, full in gene_mapping.items()
+                         if core in core_id.upper()),
+                        None
+                    )
+                    if matched:
+                        full_seq = "".join(seq)
+                        rem = len(full_seq) % 3
+                        if rem != 0:
+                            print(f"WARNING: Partial codon detected in sequence {hdr}", file=sys.stderr)
+                            print(f" Sequence length: {len(full_seq)} (not divisible by 3)", file=sys.stderr)
+                            print(f" Trimming {rem} nucleotide(s) from the end", file=sys.stderr)
+                            full_seq = full_seq[:-rem]
+
+                        prot = str(Seq(full_seq).translate(table=table,
+                                                           to_stop=True,
+                                                           cds=False))
+                        out.write(f">{matched}.p\n{prot}\n")
+                    # unmatched records are skipped
+
+                # start a new record
+                hdr = ln[1:].strip()
+                seq = []
             else:
                 seq.append(ln.strip())
-                
-        # Process the last record
-        if hdr:
-            try:
-                gene_id = re.search(r'_transcript_([^_]+)_', hdr).group(1)
-            except (IndexError, AttributeError):
-                gene_id = hdr.strip()
-            
-            # Find matching gene name
-            matched_gene = None
-            for key, value in gene_mapping.items():
-                if key in gene_id.upper():
-                    matched_gene = value
-                    break
-            
-            if not matched_gene:
-                matched_gene = gene_id
-                
-            full_seq = "".join(seq)
-            
-            # Check if sequence has partial codons and report it
-            if len(full_seq) % 3 != 0:
-                print(f"WARNING: Partial codon detected in sequence {hdr}")
-                print(f"Sequence length: {len(full_seq)} (not divisible by 3)")
-                remaining = len(full_seq) % 3
-                print(f"Trimming {remaining} nucleotide(s) from the end")
-                trimmed_seq = full_seq[:len(full_seq) - remaining]
-            else:
-                trimmed_seq = full_seq
-                
-            try:
-                prot = str(Seq(trimmed_seq).translate(table=table,
-                                                  to_stop=True,
-                                                  cds=False))
-                out.write(f">{matched_gene}.p\n{prot}\n")
-            except Exception as e:
-                print(f"ERROR translating sequence {hdr}: {str(e)}")
-                print(f"Sequence: {trimmed_seq[:50]}... (showing first 50 chars)")
+
+        # process the last record
+        if hdr is not None:
+            core_id = hdr.split('.', 1)[0]
+            matched = next(
+                (full for core, full in gene_mapping.items()
+                 if core in core_id.upper()),
+                None
+            )
+            if matched:
+                full_seq = "".join(seq)
+                rem = len(full_seq) % 3
+                if rem != 0:
+                    print(f"WARNING: Partial codon detected in sequence {hdr}", file=sys.stderr)
+                    print(f" Sequence length: {len(full_seq)} (not divisible by 3)", file=sys.stderr)
+                    print(f" Trimming {rem} nucleotide(s) from the end", file=sys.stderr)
+                    full_seq = full_seq[:-rem]
+
+                prot = str(Seq(full_seq).translate(table=table,
+                                                   to_stop=True,
+                                                   cds=False))
+                out.write(f">{matched}.p\n{prot}\n")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -468,7 +438,7 @@ def main():
        if Seq is None:
           sys.exit("ERROR: Biopython is not installed but --geseq was requested")
        geseq_pep = f"{file_prefix}_{annotator}_pep_geseq.fa"
-       translate_geseq_cds(cds_fa, geseq_pep, args.table)
+       translate_geseq_cds(cds_fa, gene_fa, geseq_pep, args.table)
        processed_pep_files.append(geseq_pep)
 
     if args.pep_braker:
