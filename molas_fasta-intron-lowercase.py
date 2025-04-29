@@ -5,6 +5,7 @@ import sys
 import os
 import re
 import shutil
+from Bio import SeqIO
 from Bio.Seq import Seq
 
 def usage():
@@ -221,88 +222,47 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
             fout.write(f"{rec[0]}\n{rec[1]}\n")
     print(f"Peptide FASTA processed and written to: {pep_out}")
 
-def translate_geseq_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
+def translate_mito_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
     """
     Translate CDS FASTA produced by gffread for GeSeq annotations.
     Uses gene names from gene FASTA file and adds .p to create protein IDs.
-    Only sequences whose core ID matches an entry in gene_mapping are processed.
+    Only sequences whose core ID (portion after '_MT_') matches an entry in gene_mapping are processed.
     Reports and trims sequences with partial codons.
     """
-    import re
-    from Bio.Seq import Seq
-    import sys
-
-    # 1) extract all gene names from the gene FASTA file
-    gene_names = []
+    # 1) extract all gene names and build mapping
+    gene_mapping = {}
     with open(gene_fa) as f:
         for line in f:
             if line.startswith('>'):
-                gene_names.append(line.strip()[1:])  # drop '>'
+                header = line[1:].strip()
+                parts = header.split('_MT_', 1)
+                if len(parts) == 2:
+                    core = parts[1]  # text after '_MT_'
+                    gene_mapping[core.upper()] = header
 
-    # 2) build a mapping from core gene name to full gene name
-    #    e.g. core "ND4" → full "M_tai_gene-blatx_ND4_1"
-    gene_mapping = {}
-    for gene in gene_names:
-        m = re.search(r'gene-blatx_([^_]+)', gene)
-        if m:
-            gene_mapping[m.group(1).upper()] = gene
+    # 2) parse each CDS record and translate if mapping exists
+    with open(pep_out, 'w') as out:
+        for rec in SeqIO.parse(cds_fa, 'fasta'):
+            # rec.id might include suffix after dot
+            core_id = rec.id.split('.', 1)[0].upper()
+            if '_MT_' not in core_id:
+                continue
+            core_key = core_id.split('_MT_', 1)[1]
+            matched = gene_mapping.get(core_key)
+            if not matched:
+                continue
 
-    # 3) translate only those CDS records that map
-    with open(cds_fa) as fh, open(pep_out, "w") as out:
-        hdr, seq = None, []
-        for ln in fh:
-            if ln.startswith(">"):
-                # process the previous record
-                if hdr is not None:
-                    # core ID before the first dot, e.g. "M_tai_g9894"
-                    core_id = hdr.split('.', 1)[0]
-                    matched = next(
-                        (full for core, full in gene_mapping.items()
-                         if core in core_id.upper()),
-                        None
-                    )
-                    if matched:
-                        full_seq = "".join(seq)
-                        rem = len(full_seq) % 3
-                        if rem != 0:
-                            print(f"WARNING: Partial codon detected in sequence {hdr}", file=sys.stderr)
-                            print(f" Sequence length: {len(full_seq)} (not divisible by 3)", file=sys.stderr)
-                            print(f" Trimming {rem} nucleotide(s) from the end", file=sys.stderr)
-                            full_seq = full_seq[:-rem]
-
-                        prot = str(Seq(full_seq).translate(table=table,
-                                                           to_stop=True,
-                                                           cds=False))
-                        out.write(f">{matched}.p\n{prot}\n")
-                    # unmatched records are skipped
-
-                # start a new record
-                hdr = ln[1:].strip()
-                seq = []
+            seq = str(rec.seq)
+            rem = len(seq) % 3
+            if rem:
+                # trim partial codon
+                trimmed = seq[:-rem]
             else:
-                seq.append(ln.strip())
+                trimmed = seq
 
-        # process the last record
-        if hdr is not None:
-            core_id = hdr.split('.', 1)[0]
-            matched = next(
-                (full for core, full in gene_mapping.items()
-                 if core in core_id.upper()),
-                None
-            )
-            if matched:
-                full_seq = "".join(seq)
-                rem = len(full_seq) % 3
-                if rem != 0:
-                    print(f"WARNING: Partial codon detected in sequence {hdr}", file=sys.stderr)
-                    print(f" Sequence length: {len(full_seq)} (not divisible by 3)", file=sys.stderr)
-                    print(f" Trimming {rem} nucleotide(s) from the end", file=sys.stderr)
-                    full_seq = full_seq[:-rem]
-
-                prot = str(Seq(full_seq).translate(table=table,
-                                                   to_stop=True,
-                                                   cds=False))
-                out.write(f">{matched}.p\n{prot}\n")
+            # translate trimmed sequence
+            prot = str(Seq(trimmed).translate(table=table, to_stop=True, cds=False))
+            out.write(f">{matched}.p\n{prot}\n")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -316,10 +276,10 @@ def main():
     parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
     parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
     parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
-    parser.add_argument("--geseq", action="store_true",
+    parser.add_argument("--nmitopep", action="store_true",
                 help="Translate GeSeq‑style CDS records in the generated CDS FASTA")
-    parser.add_argument("--table", type=int, required="--geseq" in sys.argv,
-                help="Genetic‑code table ID/name for Bio.Seq.translate; required with --geseq")
+    parser.add_argument("--table", type=int, required="--nmitopep" in sys.argv,
+                help="Genetic‑code table ID/name for Bio.Seq.translate; required with --nmitopep")
     parser.add_argument("-d", "--outputdir", help="Specify the output directory name (default: MOLAS_input)", default="MOLAS_input")
     args = parser.parse_args()
 
@@ -434,12 +394,12 @@ def main():
         out_pep_mitos = f"{file_prefix}_{annotator}_pep_mitos.fa"
         process_pep_file(args.pep_mitos, out_pep_mitos, header_prefix, "mitos")
         processed_pep_files.append(out_pep_mitos)
-    if args.geseq:
+    if args.nmitopep:
        if Seq is None:
-          sys.exit("ERROR: Biopython is not installed but --geseq was requested")
-       geseq_pep = f"{file_prefix}_{annotator}_pep_geseq.fa"
-       translate_geseq_cds(cds_fa, gene_fa, geseq_pep, args.table)
-       processed_pep_files.append(geseq_pep)
+          sys.exit("ERROR: Biopython is not installed but --nmitopep was requested")
+       mito_pep = f"{file_prefix}_{annotator}_pep_mito.fa"
+       translate_mito_cds(cds_fa, gene_fa, mito_pep, args.table)
+       processed_pep_files.append(mito_pep)
 
     if args.pep_braker:
         out_pep_braker = f"{file_prefix}_{annotator}_pep_braker.fa"

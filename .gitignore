@@ -1,0 +1,17 @@
+# Ignore scripts copied from repo from other people
+fcs.py
+run_fcsadaptor.sh
+
+# Repeat masking 
+splitMfasta.pl
+parseTrfOutput.py
+
+#protein preprocessing
+simplifyFastaHeaders.pl
+
+#Braker3 gtf to gff
+gtf2gff.pl
+genome_anno.py
+
+#Script from Stingtie
+prepDE.py

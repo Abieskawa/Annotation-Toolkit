@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Combined GFF tool:  
-  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos, geseq) to create 
+  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos, mitohifi) to create 
     gene/child/exon hierarchies and ensures only 9 columns with a single "##gff-version 3".
   - Processes all input files (provided via -I) and writes intermediate <basename>_fix.gff files, 
     then merges them into one merged_fix.gff.
@@ -496,145 +496,96 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
     final.insert(0, "##gff-version 3")
     return final
 
-# ---------------- New: Geseq fix ----------------
-def fix_geseq_lines(lines, args):
+def fix_gb_origin_lines(lines, args):
     """
-    Rewrite GeSeq GFF so that:
-      • All original GeSeq header lines (`##source-version`, `##sequence-region`,
-        …) are preserved (plus a single leading '##gff-version 3').
-      • `region` / `source` feature lines are copied verbatim.
-      • Every *individual* GeSeq record (distinguished by its original ID if
-        present, otherwise by gene name + coordinates) becomes its own
-        gene‑level hierarchy — no collapsing when two hits share the same
-        `gene=` tag.
+    Rewrite gb_origin GFF so that:
+      • All original header lines are preserved (plus '##gff-version 3').
+      • region/source features are copied with optional seq renaming.
+      • Records form gene hierarchies with IDs {basename}_{seq}_{childfeature}_{geneName}.
+      • Transcript lines use child feature type (tRNA or mRNA for CDS).
+      • Only one CDS per protein-coding gene, and every child (tRNA/rRNA) also has an exon.
     """
-    # ---------- keep headers ----------
-    orig_headers = [l.rstrip('\n') for l in lines if l.startswith("##")]
-    out_hdr = ["##gff-version 3"] + [h for h in orig_headers
-                                     if not h.startswith("##gff-version")]
+    # Collect headers
+    orig_headers = [l.rstrip('') for l in lines if l.startswith("##")]
+    out_hdr = ["##gff-version 3"] + [h for h in orig_headers if not h.startswith("##gff-version")]
+    # Data lines
+    data_lines = [l.rstrip('') for l in lines if not l.startswith("##")]
 
-    data_lines  = [l.rstrip('\n') for l in lines if not l.startswith("##")]
+    # Passthrough region/source with seq override
+    passthrough = []
+    for l in data_lines:
+        parts = l.split('\t')
+        if len(parts) >= 3 and parts[2].lower() in ("region", "source"):
+            parts[0] = args.gb_seq_name or parts[0]
+            passthrough.append('\t'.join(parts))
 
-    # ---------- passthrough region / source ----------
-    passthrough = [
-        l for l in data_lines
-        if (len(l.split('\t')) >= 3 and
-            l.split('\t')[2].lower() in ("region", "source"))
-    ]
-
-    # ---------- group each record by a unique key ----------
+    # Group genes and children by start/end coordinates
     gene_groups = {}
-    for line in data_lines:
-        parts = line.split('\t')
+    for l in data_lines:
+        parts = l.split('\t')
         if len(parts) < 9:
             continue
-
-        seq, source, feature, start, end, score, strand, phase, attrs_str = parts
-        feat_lower = feature.lower()
-        if feat_lower in ("region", "source"):
-            continue
-
-        attrs = parse_attrs(attrs_str)
-        gene_name = attrs.get("gene")
-        if gene_name is None:
-            continue
-
-        orig_id = attrs.get("ID")
-        # unique key: prefer original ID; fall back to gene + coords
-        key = orig_id if orig_id else f"{gene_name}-{start}"
-
-        if feat_lower == "gene":
-            gene_groups.setdefault(key, {})["gene"] = {
-                "seq": seq, "source": source, "start": start, "end": end,
-                "strand": strand, "attrs": attrs
-            }
-        elif feat_lower in ("trna", "mrna", "rrna", "cds"):
-            gene_groups.setdefault(key, {})["child"] = {
-                "seq": seq, "source": source, "feature": feature,
-                "start": start, "end": end, "strand": strand, "attrs": attrs
-            }
+        seq = args.gb_seq_name or parts[0]
+        source, feature = parts[1], parts[2]
+        start, end, strand = parts[3], parts[4], parts[6]
+        attrs = parse_attrs(parts[8])
+        key = (start, end)
+        if feature.lower() == 'gene':
+            gene_groups[key] = {'gene': {'seq': seq, 'source': source, 'start': start, 'end': end, 'strand': strand, 'attrs': attrs}}
+        elif key in gene_groups:
+            gene_groups[key]['child'] = {'seq': seq, 'source': source, 'feature': feature, 'start': start, 'end': end, 'strand': strand, 'attrs': attrs}
 
     output = out_hdr + passthrough
-
-    for key, group in gene_groups.items():
-        if "gene" not in group:
-            continue
-
-        gene_rec   = group["gene"]
-        gene_attrs = gene_rec["attrs"]
-        gene_name  = gene_attrs.get("gene", "unknown")
-        orig_gene_id = gene_attrs.get("ID")
-
-        # build gene ID (preserve original, prepend basename if needed)
-        if orig_gene_id:
-            gene_id = orig_gene_id
-            if args.basename and not gene_id.startswith(f"{args.basename}_"):
-                gene_id = f"{args.basename}_{gene_id}"
+    for key, grp in gene_groups.items():
+        grec = grp['gene']
+        seq, source, attrs = grec['seq'], grec['source'], grec['attrs']
+        gene_name = attrs.get('Name') or attrs.get('gene') or ''
+        child = grp.get('child')
+        child_feat = child['feature'].lower() if child else 'gene'
+        # Build gene ID
+        gene_id = f"{args.basename}_{seq}_{child_feat}_{gene_name}" if args.basename else f"{seq}_{child_feat}_{gene_name}"
+        # Determine biotype
+        if 'gene_biotype' in attrs:
+            biotype = attrs['gene_biotype']
         else:
-            gene_id = (f"{args.basename}_gene_{gene_name}"
-                       if args.basename else
-                       f"{gene_rec['seq']}_gene_{gene_name}_{gene_rec['start']}")
+            biotype = 'protein_coding' if child_feat == 'cds' else child_feat
+        # Gene line
+        g_attrs = {'ID': gene_id, 'Name': gene_name, 'gene_id': gene_id, 'gene_biotype': biotype}
+        output.append('\t'.join([seq, source, 'gene', grec['start'], grec['end'], '.', grec['strand'], '.', reconst_attrs(g_attrs)]))
 
-        gene_biotype = gene_attrs.get("gene_biotype", "NA")
-        print(f"Gene {orig_gene_id} does not have gene_biotype! Check it!", flush=True)
-        g_attrs = {"ID": gene_id, "Name": gene_name,
-                   "gene_id": gene_id, "gene_biotype": gene_biotype}
-
-        output.append("\t".join([
-            gene_rec["seq"], gene_rec["source"], "gene",
-            gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], ".",
-            reconst_attrs(g_attrs)
-        ]))
-
-        # ---------- transcript / CDS / exon ----------
-        transcript_id = (f"{args.basename}_transcript_{gene_name}_{gene_rec['start']}"
-                         if args.basename else
-                         f"{gene_rec['seq']}_transcript_{gene_name}_{gene_rec['start']}")
-
-        if "child" in group:
-            ch = group["child"]
-            t_feature = ("mRNA" if gene_biotype.lower() == "protein_coding"
-                         else ch["feature"])
-            output.append("\t".join([
-                ch["seq"], ch["source"], t_feature,
-                ch["start"], ch["end"], ".", ch["strand"], ".",
-                reconst_attrs({"ID": transcript_id, "Parent": gene_id})
-            ]))
-            if gene_biotype.lower() == "protein_coding":
-                output.append("\t".join([
-                    ch["seq"], ch["source"], "CDS",
-                    ch["start"], ch["end"], ".", ch["strand"], "0",
-                    reconst_attrs({"ID": f"{transcript_id}.cds1",
-                                   "Parent": transcript_id})
-                ]))
-            exon_seq, exon_start, exon_end, exon_strand = (
-                ch["seq"], ch["start"], ch["end"], ch["strand"])
+        # Child (transcript) line
+        if child:
+            child_count = grp.get('child_count', 0) + 1
+            grp['child_count'] = child_count
+            tid = f"{args.basename}_{seq}_{gene_name}.{child_feat}{child_count}" if args.basename else f"{seq}_{gene_name}.{child_feat}{child_count}"
+            t_feat = child['feature'] if child_feat != 'cds' else 'mRNA'
+            output.append('\t'.join([child['seq'], child['source'], t_feat, child['start'], child['end'], '.', child['strand'], '.', reconst_attrs({'ID': tid, 'Parent': gene_id})]))
+            # CDS + exon for coding
+            if biotype == 'protein_coding':
+                # CDS
+                count = grp.get('cds_count', 0) + 1
+                grp['cds_count'] = count
+                cds_id = f"{tid}.cds{count}"
+                output.append('\t'.join([child['seq'], child['source'], 'CDS', child['start'], child['end'], '.', child['strand'], '0', reconst_attrs({'ID': cds_id, 'Parent': tid})]))
+            # Exon for all child types
+            ex_count = grp.get('exon_count', 0) + 1
+            grp['exon_count'] = ex_count
+            exon_id = f"{tid}.exon{ex_count}"
+            output.append('\t'.join([child['seq'], child['source'], 'exon', child['start'], child['end'], '.', child['strand'], '.', reconst_attrs({'ID': exon_id, 'Parent': tid})]))
         else:
-            # create synthetic transcript using gene coords
-            t_feature = "mRNA" if gene_biotype.lower() == "protein_coding" else "tRNA"
-            output.append("\t".join([
-                gene_rec["seq"], gene_rec["source"], t_feature,
-                gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
-                reconst_attrs({"ID": transcript_id, "Parent": gene_id})
-            ]))
-            if gene_biotype.lower() == "protein_coding":
-                output.append("\t".join([
-                    gene_rec["seq"], gene_rec["source"], "CDS",
-                    gene_rec["start"], gene_rec["end"], ".", gene_rec["strand"], "0",
-                    reconst_attrs({"ID": f"{transcript_id}.cds1",
-                                   "Parent": transcript_id})
-                ]))
-            exon_seq, exon_start, exon_end, exon_strand = (
-                gene_rec["seq"], gene_rec["start"], gene_rec["end"], gene_rec["strand"])
-
-        exon_id = f"{transcript_id}.exon1"
-        output.append("\t".join([
-            exon_seq, gene_rec["source"], "exon",
-            exon_start, exon_end, ".", exon_strand, "0",
-            reconst_attrs({"ID": exon_id, "Parent": transcript_id,
-                           "Name": gene_name})
-        ]))
-
+            # synthetic transcript/exon when no child
+            child_count = grp.get('child_count', 0) + 1
+            grp['child_count'] = child_count
+            tid = f"{args.basename}_{seq}_{gene_name}.t{child_count}" if args.basename else f"{seq}_transcript_{gene_name}.t{child_count}"
+            t_feat = 'mRNA' if biotype == 'protein_coding' else 'gene'
+            output.append('\t'.join([seq, source, t_feat, grec['start'], grec['end'], '.', grec['strand'], '0', reconst_attrs({'ID': tid, 'Parent': gene_id})]))
+            if biotype == 'protein_coding':
+                count = grp.get('cds_count', 0) + 1
+                grp['cds_count'] = count
+                output.append('\t'.join([seq, source, 'CDS', grec['start'], grec['end'], '.', grec['strand'], '0', reconst_attrs({'ID': f"{tid}.cds{count}", 'Parent': tid})]))
+            ex_count = grp.get('exon_count', 0) + 1
+            grp['exon_count'] = ex_count
+            output.append('\t'.join([seq, source, 'exon', grec['start'], grec['end'], '.', grec['strand'], '.', reconst_attrs({'ID': f"{tid}.exon{ex_count}", 'Parent': tid})]))
     return output
 
 def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
@@ -644,8 +595,8 @@ def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
         return fix_braker3(lines, args), []
     elif in_fmt in ("infernal", "trnascan-se"):
         return fix_gff_lines(lines, csv_fp, in_fmt, args), []
-    elif in_fmt == "geseq":
-        return fix_geseq_lines(lines, args), []
+    elif in_fmt == ("mitohifi"):
+        return fix_gb_origin_lines(lines, args), []
     else:
         return lines, []
 
@@ -656,7 +607,7 @@ def cleanup_for_fix(lines):
     for line in lines:
         if line.startswith("#!gff-spec-version"):
             continue
-        # NEW: drop any GeSeq (or otherwise) source‑version header
+        # NEW: drop any MitoHiFi (or otherwise) source‑version header
         if line.startswith("##source-version"):
             continue
         if line.startswith("##gff-version"):
@@ -747,7 +698,7 @@ def process_file(fmt, fname, args):
         conv_count = len(converted)
         lines = converted
         dropped = drops2
-    elif fmt_lower in ("braker3", "mitos", "trnascan-se", "geseq"):
+    elif fmt_lower in ("braker3", "mitos", "trnascan-se", "mitohifi"):
         lines = orig_lines[:]
     fixed, local_dropped = fix_gff_lines_main(lines, args.csv, fmt_lower, args)
     dropped.extend(local_dropped)
@@ -869,7 +820,7 @@ def main():
         description="GFF combine & fix tool. Processes all input files, writes intermediate _fix.gff files, then merges them into merged_fix.gff."
     )
     parser.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
-                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos, geseq})")
+                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos, mitohifi})")
     parser.add_argument("--csv", type=str, default="Rfam_15_0.csv",
                         help="CSV for lookup (default=Rfam_15_0.csv).")
     parser.add_argument("--outdir", type=str, required=True,
@@ -886,6 +837,8 @@ def main():
                         help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_rrna.g1'.")
     parser.add_argument("--source", type=str, default=None,
                         help="Specify source field for infernal-to-GFF conversion. If provided, this value is used in the second column; otherwise, default is 'cmscan'.")
+    parser.add_argument("--gb-seq-name", type=str, default=None,
+                    help="Override sequence name for gb_origin input GFF.")
     args = parser.parse_args()
     
     csv_data = load_csv(args.csv)
