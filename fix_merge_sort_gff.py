@@ -543,7 +543,7 @@ def fix_gb_origin_lines(lines, args):
         child = grp.get('child')
         child_feat = child['feature'].lower() if child else 'gene'
         # Build gene ID
-        gene_id = f"{args.basename}_{seq}_{child_feat}_{gene_name}" if args.basename else f"{seq}_{child_feat}_{gene_name}"
+        gene_id = f"{args.basename}_{seq}_{gene_name}" if args.basename else f"{seq}_{gene_name}"
         # Determine biotype
         if 'gene_biotype' in attrs:
             biotype = attrs['gene_biotype']
@@ -553,11 +553,16 @@ def fix_gb_origin_lines(lines, args):
         g_attrs = {'ID': gene_id, 'Name': gene_name, 'gene_id': gene_id, 'gene_biotype': biotype}
         output.append('\t'.join([seq, source, 'gene', grec['start'], grec['end'], '.', grec['strand'], '.', reconst_attrs(g_attrs)]))
 
-        # Child (transcript) line
+        # Child line
+        # In most of cases, the mitochondria protein-coding gene only has CDS entries, so the child only count CDS entries here.
+        # As for ncRNA gene, child is transcript level
         if child:
             child_count = grp.get('child_count', 0) + 1
             grp['child_count'] = child_count
-            tid = f"{args.basename}_{seq}_{gene_name}.{child_feat}{child_count}" if args.basename else f"{seq}_{gene_name}.{child_feat}{child_count}"
+            if child_feat == 'cds':
+                tid = f"{args.basename}_{seq}_{gene_name}.t{child_count}" if args.basename else f"{seq}_{gene_name}.t{child_count}"
+            else:
+                tid = f"{args.basename}_{seq}_{gene_name}.{child_feat}{child_count}" if args.basename else f"{seq}_{gene_name}.{child_feat}{child_count}"
             t_feat = child['feature'] if child_feat != 'cds' else 'mRNA'
             output.append('\t'.join([child['seq'], child['source'], t_feat, child['start'], child['end'], '.', child['strand'], '.', reconst_attrs({'ID': tid, 'Parent': gene_id})]))
             # CDS + exon for coding
