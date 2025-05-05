@@ -7,12 +7,12 @@ This script has been tested on beltfish, marine tialpia, asian hard clam.
 Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
 ### Check basics number of genome assembly
 ```
-python assembly_quality_check_v5.py {fasta file} 
+python {the path of this directory}/assembly_quality_check_v5.py {fasta file} 
 ```
 ### Check with BUSCO genome mode
 The miniprot is recommended to apply here. Please start a docker of BUSCO first and run the command below. It takes less an hour (threads = 128).
 ```
-nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o asian_hard_clam_clean_genome_miniprot --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
+nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o {output dir basename} --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
 ```
 
 ### Check with FCS adaptor/gx
@@ -37,13 +37,15 @@ awk -F'\t' -v OFS='\t' '{ $5 = "EXCLUDE"; print }' {output directory}/{genome fa
 #Clean genome
 cat MTW_genome.fasta | python3 {the path of this directory}/fcs.py clean genome --action-report ./{output directory}/{genome fasta basename}.{tax id}.fcs_gx_report_modified.txt --output {output clean directory}/{genome fasta basename}_clean.fasta --contam-fasta-out {output clean directory}/contam.fasta
 ```
+Note
+*If FCS-adapter/gx detect the contamination, users can decide whether they remove the candidates or not. If users modify the sequence, please rememeber to check BUSCO and basic statistics again*
 
-## (Optional) Check which scaffold is mitochondria genome
+## Check which scaffold is mitochondria genome
 ```
 mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges}
 ```
 
-## (Optional) If one wants to extract mitochondria and nucleus chromosomes (Longest)
+## Extract mitochondria and nucleus chromosomes (Longest N)
 ```
 python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
@@ -51,7 +53,7 @@ python {the path of this directory}/extract_nucleus_query_genome.py -i {the geno
 Run repeat masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
 ```
 #Repeat masking with RepeatMasker and RepeatModeler
-nohup bash -c "time (../Annotation-Toolkit/repeatmask.sh -i 00_keep_nuclear_mito_genome/MTW_genome_keep_nuclear_mito.fasta -o /output/asian_hard_clam -t 128 -l /output/Lib_fish/famdb -s 'Bivalvia' -f 'asian_hard_clam' --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
+nohup bash -c "time ({the path of this directory}/repeatmask.sh -i {input genome fasta path inside current dir} -o {outdir absolute path} -t 128 -l {ex./output/Lib_fish/famdb} -s {'search target'} -f {'basename tag for file naming'} --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
 
 #Run repeat masking again with TRF
 nohup bash -c "time (../Annotation-Toolkit/trf_mask.sh -i 03_SoftMask/MTW_genome_keep_nuclear_mito.fasta.masked -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
@@ -218,10 +220,23 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 ```
 
 ## Citation and the tools used in this pipeline
+### FCS scripts
+fcs.py/run_fcsadaptor.sh[link](https://github.com/ncbi/fcs)
+
 ### Repeat Annotation/masking
-[TETools (v1.89.2)](https://github.com/Dfam-consortium/TETools) 
-[TRF (v4.09)](https://github.com/Benson-Genomics-Lab/TRF)
-[bedtools (v2.31.1)](https://github.com/arq5x/bedtools2)
+TETools (v1.89.2)[link](https://github.com/Dfam-consortium/TETools) 
+TRF (v4.09)[link](https://github.com/Benson-Genomics-Lab/TRF)
+bedtools (v2.31.1)[link](https://github.com/arq5x/bedtools2)
+splitMfasta.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)
+parseTrfOutput.py[link](https://github.com/gatech-genemark/BRAKER2-exp/blob/34e9d1dfd7228128968063f76b37d29c73a39efc/bin/trf-scripts/parseTrfOutput.py)
+
+### protein preprocessing
+simplifyFastaHeaders.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/simplifyFastaHeaders.pl#L7)
+
+### Braker (gtf to gff)
+gtf2gff.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/gtf2gff.pl#L347)
+genome_anno.py[link](https://github.com/Gaius-Augustus/Tiberius/blob/bfa9b37eaeca0794dd2b508c32e3f59bd28ec479/bin/genome_anno.py#L5)
 
 ### RNAseq analysis
-[stringtie (v2.2.3), prepDE.py](https://github.com/gpertea/stringtie) Note: prepDE.py3 in that repository was used here.
+stringtie (v2.2.3), prepDE.py[link](https://github.com/gpertea/stringtie) Note: prepDE.py3 in that repository was used here.
+STAR (v2.7.11b)[link](https://github.com/alexdobin/STAR)
