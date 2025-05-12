@@ -510,6 +510,9 @@ def fix_gb_origin_lines(lines, args):
     out_hdr = ["##gff-version 3"] + [h for h in orig_headers if not h.startswith("##gff-version")]
     # Data lines
     data_lines = [l.rstrip('') for l in lines if not l.startswith("##")]
+    
+    # Define source value to use
+    source_value = args.gb_source if args.gb_source else "."
 
     # Passthrough region/source with seq override
     passthrough = []
@@ -517,6 +520,7 @@ def fix_gb_origin_lines(lines, args):
         parts = l.split('\t')
         if len(parts) >= 3 and parts[2].lower() in ("region", "source"):
             parts[0] = args.gb_seq_name or parts[0]
+            parts[1] = source_value  # Use the specified source value
             passthrough.append('\t'.join(parts))
 
     # Group genes and children by start/end coordinates
@@ -526,7 +530,8 @@ def fix_gb_origin_lines(lines, args):
         if len(parts) < 9:
             continue
         seq = args.gb_seq_name or parts[0]
-        source, feature = parts[1], parts[2]
+        source = source_value  # Use the specified source value
+        feature = parts[2]
         start, end, strand = parts[3], parts[4], parts[6]
         attrs = parse_attrs(parts[8])
         key = (start, end)
@@ -592,7 +597,7 @@ def fix_gb_origin_lines(lines, args):
             grp['exon_count'] = ex_count
             output.append('\t'.join([seq, source, 'exon', grec['start'], grec['end'], '.', grec['strand'], '.', reconst_attrs({'ID': f"{tid}.exon{ex_count}", 'Parent': tid})]))
     return output
-
+    
 def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
     if in_fmt == "mitos":
         return fix_mitos_lines(lines, args)
@@ -844,6 +849,8 @@ def main():
                         help="Specify source field for infernal-to-GFF conversion. If provided, this value is used in the second column; otherwise, default is 'cmscan'.")
     parser.add_argument("--gb-seq-name", type=str, default=None,
                     help="Override sequence name for gb_origin input GFF.")
+    parser.add_argument("--gb-source", type=str, default=None,
+                    help="Specify source field for GB input. If provided, this value is used in the second column; otherwise, default is '.'.")
     args = parser.parse_args()
     
     csv_data = load_csv(args.csv)
