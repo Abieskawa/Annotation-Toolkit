@@ -53,7 +53,8 @@ def fix_genes_in_gff(gff_file, L):
     Read gene (and ncRNA_gene) features from the GFF file and, for those on the negative strand,
     fix problematic annotations. A negative strand gene is considered problematic if:
       1. Its length is greater than half of the sequence length, or
-      2. It completely encloses another gene on the same strand.
+      2. It completely encloses another gene on the same strand, or
+      3. It touches the first or last base pair of the sequence.
     For problematic genes, we fix them by shifting their coordinates so that:
          new_start = original end, and new_end = L + 1.
     In addition, we record an extra forbidden interval covering from position 1 up to the original start.
@@ -76,7 +77,8 @@ def fix_genes_in_gff(gff_file, L):
             if len(parts) < 9:
                 continue
             feature_type = parts[2].strip()
-            if feature_type not in {"gene", "ncRNA_gene"}:
+            # Only look at "gene" entries exactly
+            if feature_type != "gene":
                 continue
             try:
                 s = int(parts[3])
@@ -92,24 +94,41 @@ def fix_genes_in_gff(gff_file, L):
                 "orig_end": e,
                 "line": line
             })
-    # Process genes on the negative strand.
-    neg_genes = [g for g in genes if g["strand"] == "-"]
-    for g in neg_genes:
+    
+    # Process genes for problematic conditions
+    for g in genes:
         # Condition 1: gene length greater than half of the sequence length.
         cond_length = ((g["end"] - g["start"] + 1) > (L / 2))
+        
         # Condition 2: gene completely encloses another gene on the same strand.
+        same_strand_genes = [other for other in genes if other["strand"] == g["strand"] and other is not g]
         cond_overlap = any((other["start"] > g["start"] and other["end"] < g["end"])
-                           for other in neg_genes if other is not g)
-        if cond_length or cond_overlap:
+                           for other in same_strand_genes)
+        
+        # Condition 3: gene touches the first or last base pair of the sequence.
+        cond_boundary = (g["start"] == 1 or g["end"] == L)
+        
+        if cond_length or cond_overlap or cond_boundary:
             problematic_flag = True
             # Output the problematic gene information.
+            reason = []
+            if cond_length:
+                reason.append("length greater than half of the sequence")
+            if cond_overlap:
+                reason.append("completely encloses another gene")
+            if cond_boundary:
+                reason.append("touches sequence boundary")
+            
             sys.stderr.write(f"Problematic gene detected: {g['line']}\n")
-            sys.stderr.write(f"Original start: {g['orig_start']}\n")
+            sys.stderr.write(f"Original start: {g['orig_start']}, Original end: {g['orig_end']}\n")
+            sys.stderr.write(f"Reasons: {', '.join(reason)}\n")
+            
             # Add an extra forbidden interval covering from 1 to the original start.
             extra_intervals.append((1, min(L, g["orig_start"])))
             # Fix the gene: shift it so that it does not affect the first copy.
             g["start"] = g["end"]
             g["end"] = L + g["start"]
+    
     fixed_genes = []
     for g in genes:
         fixed_genes.append((g["start"], g["end"]))
@@ -159,6 +178,46 @@ def choose_split_point(allowed_intervals):
     split_point = (max_interval[0] + max_interval[1]) // 2
     return split_point, max_interval
 
+def find_fallback_split_point(genes, L):
+    """
+    Find a fallback split point when no allowed intervals are found.
+    Looks for the largest gap between adjacent genes.
+    """
+    # Sort genes by start position
+    sorted_genes = sorted([(g["start"], g["end"]) for g in genes], key=lambda x: x[0])
+    
+    if not sorted_genes:
+        return L // 2  # default to middle if no genes
+    
+    # Find gaps between adjacent genes
+    gaps = []
+    for i in range(len(sorted_genes)-1):
+        current_end = sorted_genes[i][1]
+        next_start = sorted_genes[i+1][0]
+        if next_start > current_end:  # There's a gap
+            gap_size = next_start - current_end - 1
+            mid_point = current_end + gap_size // 2
+            gaps.append((gap_size, mid_point))
+    
+    # Check gap between last gene and first gene (wrapping around)
+    if sorted_genes[0][0] > 1:  # Gap at the beginning
+        gap_size = sorted_genes[0][0] - 1
+        mid_point = 1 + gap_size // 2
+        gaps.append((gap_size, mid_point))
+    
+    if sorted_genes[-1][1] < L:  # Gap at the end
+        gap_size = L - sorted_genes[-1][1]
+        mid_point = sorted_genes[-1][1] + gap_size // 2
+        gaps.append((gap_size, mid_point))
+    
+    if not gaps:
+        # No gaps found, pick middle of sequence
+        return L // 2
+    
+    # Find the largest gap
+    largest_gap = max(gaps, key=lambda x: x[0])
+    return largest_gap[1]  # Return the midpoint of the largest gap
+
 def main():
     parser = argparse.ArgumentParser(
         description="Adjust circular mitochondria genome to avoid splitting in range of problematic genes.\n"
@@ -192,16 +251,44 @@ def main():
         print("No adjustment necessary: no problematic genes detected. Exiting without changes.")
         sys.exit(0)
     
+    # Get genes for fallback split point calculation
+    genes = []
+    with open(args.gff) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 9:
+                continue
+            feature_type = parts[2].strip()
+            if feature_type != "gene":
+                continue
+            try:
+                s = int(parts[3])
+                e = int(parts[4])
+            except ValueError:
+                continue
+            strand = parts[6].strip()
+            genes.append({
+                "start": s,
+                "end": e,
+                "strand": strand
+            })
+    
     allowed_intervals = find_allowed_intervals(merged_intervals, L)
-    if not allowed_intervals:
-        sys.exit("Error: No allowed intervals found. Check your GFF file and margin parameter.")
-
-    # Step 4: Choose a safe split point from the first sequence (allowed intervals are within 1 to L).
-    split_point, chosen_interval = choose_split_point(allowed_intervals)
+    
+    # Step 4: Choose a safe split point
+    if allowed_intervals:
+        split_point, chosen_interval = choose_split_point(allowed_intervals)
+        print(f"Chosen split point: {split_point} (from allowed interval {chosen_interval})")
+    else:
+        print("No allowed intervals found. Using fallback method to find split point.")
+        split_point = find_fallback_split_point(genes, L)
+        print(f"Fallback split point: {split_point} (chosen from largest gap between genes)")
+    
     if split_point is None:
         sys.exit("Error: Failed to determine a split point.")
-    
-    print(f"Chosen split point: {split_point} (from allowed interval {chosen_interval})")
     
     # Step 5: Use the chosen split point (from the first sequence) on the doubled sequence.
     adjusted_seq = doubled_seq[split_point - 1 : split_point - 1 + L]
@@ -217,8 +304,11 @@ def main():
         f.write("Mitochondria Adjustment Information\n")
         f.write(f"Original length: {L} bp\n")
         f.write(f"Chosen split point (from first sequence): {split_point}\n")
-        f.write(f"Allowed intervals: {allowed_intervals}\n")
-        f.write("Problem detected due to overlapping gene(s) on the same strand.\n")
+        if allowed_intervals:
+            f.write(f"Allowed intervals: {allowed_intervals}\n")
+        else:
+            f.write("No allowed intervals found. Used fallback method to find split point.\n")
+        f.write("Problem detected due to genes touching sequence boundaries.\n")
         f.write("Fixed problematic gene coordinates where necessary and added extra forbidden intervals.\n")
         f.write("Adjusted genome is extracted from the doubled sequence starting at the chosen split point.\n")
         f.write("Reminder: Use the GFF file directly from Mitos for accurate gene annotation.\n")
