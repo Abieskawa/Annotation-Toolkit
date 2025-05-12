@@ -9,7 +9,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 def usage():
-    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [-d <outputdir>]".format(sys.argv[0]))
+    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [--organelletable <table_num>] [-d <outputdir>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
@@ -224,7 +224,7 @@ def process_pep_file(pep_in, pep_out, header_prefix, pep_type):
 
 def translate_mito_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
     """
-    Translate CDS FASTA produced by gffread for GeSeq annotations.
+    Translate CDS FASTA produced by gffread for mitohifi/mitoz annotations.
     Uses gene names from gene FASTA file and adds .p to create protein IDs.
     Only sequences whose core ID (portion after '_MT_') matches an entry in gene_mapping are processed.
     Reports and trims sequences with partial codons.
@@ -276,10 +276,7 @@ def main():
     parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
     parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
     parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
-    parser.add_argument("--nmitopep", action="store_true",
-                help="Translate GeSeq‑style CDS records in the generated CDS FASTA")
-    parser.add_argument("--table", type=int, required="--nmitopep" in sys.argv,
-                help="Genetic‑code table ID/name for Bio.Seq.translate; required with --nmitopep")
+    parser.add_argument("--organelletable", type=int, help="Genetic-code table ID/name for Bio.Seq.translate; if provided, will translate CDS records", default=None)
     parser.add_argument("-d", "--outputdir", help="Specify the output directory name (default: MOLAS_input)", default="MOLAS_input")
     args = parser.parse_args()
 
@@ -394,12 +391,12 @@ def main():
         out_pep_mitos = f"{file_prefix}_{annotator}_pep_mitos.fa"
         process_pep_file(args.pep_mitos, out_pep_mitos, header_prefix, "mitos")
         processed_pep_files.append(out_pep_mitos)
-    if args.nmitopep:
-       if Seq is None:
-          sys.exit("ERROR: Biopython is not installed but --nmitopep was requested")
-       mito_pep = f"{file_prefix}_{annotator}_pep_mito.fa"
-       translate_mito_cds(cds_fa, gene_fa, mito_pep, args.table)
-       processed_pep_files.append(mito_pep)
+    if args.organelletable:
+        if Seq is None:
+            sys.exit("ERROR: Biopython is not installed but --organelletable was requested")
+        mito_pep = f"{file_prefix}_{annotator}_pep_mito.fa"
+        translate_mito_cds(cds_fa, gene_fa, mito_pep, args.organelletable)
+        processed_pep_files.append(mito_pep)
 
     if args.pep_braker:
         out_pep_braker = f"{file_prefix}_{annotator}_pep_braker.fa"
