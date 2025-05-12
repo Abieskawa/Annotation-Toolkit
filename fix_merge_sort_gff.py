@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Combined GFF tool:  
-  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos, mitohifi) to create 
+  - Fixes GFF from various sources (infernal, trnascan‑se, braker3, mitos, gb/gbf (mitohifi, mitoz)) to create 
     gene/child/exon hierarchies and ensures only 9 columns with a single "##gff-version 3".
   - Processes all input files (provided via -I) and writes intermediate <basename>_fix.gff files, 
     then merges them into one merged_fix.gff.
@@ -600,7 +600,7 @@ def fix_gff_lines_main(lines, csv_fp, in_fmt, args):
         return fix_braker3(lines, args), []
     elif in_fmt in ("infernal", "trnascan-se"):
         return fix_gff_lines(lines, csv_fp, in_fmt, args), []
-    elif in_fmt == ("mitohifi"):
+    elif in_fmt == ("gb"):
         return fix_gb_origin_lines(lines, args), []
     else:
         return lines, []
@@ -703,7 +703,7 @@ def process_file(fmt, fname, args):
         conv_count = len(converted)
         lines = converted
         dropped = drops2
-    elif fmt_lower in ("braker3", "mitos", "trnascan-se", "mitohifi"):
+    elif fmt_lower in ("braker3", "mitos", "trnascan-se", "gb"):
         lines = orig_lines[:]
     fixed, local_dropped = fix_gff_lines_main(lines, args.csv, fmt_lower, args)
     dropped.extend(local_dropped)
@@ -825,7 +825,7 @@ def main():
         description="GFF combine & fix tool. Processes all input files, writes intermediate _fix.gff files, then merges them into merged_fix.gff."
     )
     parser.add_argument("-I", nargs=2, metavar=("FORMAT","FILE"), action="append", required=True,
-                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos, mitohifi})")
+                        help="(FORMAT in {infernal, trnascan-se, braker3, mitos, gb})")
     parser.add_argument("--csv", type=str, default="Rfam_15_0.csv",
                         help="CSV for lookup (default=Rfam_15_0.csv).")
     parser.add_argument("--outdir", type=str, required=True,
