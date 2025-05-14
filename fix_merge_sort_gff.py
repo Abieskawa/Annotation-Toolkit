@@ -18,7 +18,7 @@ tblout2gff reference:
 1. https://github.com/nawrockie/jiffy-infernal-hmmer-scripts/blob/master/infernal-tblout2gff.pl
 """
 
-import sys, argparse, csv, logging, re, os
+import sys, argparse, csv, logging, re, os, subprocess, tempfile
 from collections import defaultdict
 import pandas as pd
 
@@ -496,6 +496,33 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
     final.insert(0, "##gff-version 3")
     return final
 
+def parse_genbank_strands(gbf_path):
+    """Parse a GenBank file and return a dictionary of gene names to strand info."""
+    gene_strands = {}
+    
+    with open(gbf_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if '/gene=' in line:
+                # Extract gene name
+                gene_match = re.search(r'/gene="([^"]+)"', line)
+                if gene_match:
+                    gene_name = gene_match.group(1)
+                    # Look back in previous line for strand information
+                    prev_line = prev_lines[-1] if 'prev_lines' in locals() else ""
+                    strand = '-' if 'complement(' in prev_line else '+'
+                    gene_strands[gene_name] = strand
+            
+            # Keep track of previous lines for context
+            if 'prev_lines' not in locals():
+                prev_lines = [line]
+            else:
+                prev_lines.append(line)
+                if len(prev_lines) > 2:
+                    prev_lines.pop(0)
+    
+    return gene_strands
+
 def fix_gb_origin_lines(lines, args):
     """
     Rewrite gb_origin GFF so that:
@@ -505,6 +532,12 @@ def fix_gb_origin_lines(lines, args):
       • Transcript lines use child feature type (tRNA or mRNA for CDS).
       • Only one CDS per protein-coding gene, and every child (tRNA/rRNA) also has an exon.
     """
+    # Load strand information from GenBank file if provided
+    gene_strands = {}
+    if args.gbf:
+        gene_strands = parse_genbank_strands(args.gbf)
+        logging.info(f"Loaded strand information for {len(gene_strands)} genes from GenBank file")
+    
     # Collect headers
     orig_headers = [l.rstrip('') for l in lines if l.startswith("##")]
     out_hdr = ["##gff-version 3"] + [h for h in orig_headers if not h.startswith("##gff-version")]
@@ -545,6 +578,12 @@ def fix_gb_origin_lines(lines, args):
         grec = grp['gene']
         seq, source, attrs = grec['seq'], grec['source'], grec['attrs']
         gene_name = attrs.get('Name') or attrs.get('gene') or ''
+        
+        # Use strand from GenBank file if available
+        if gene_name in gene_strands:
+            grec['strand'] = gene_strands[gene_name]
+            logging.info(f"Setting strand for gene {gene_name} to {grec['strand']} from GenBank file")
+        
         child = grp.get('child')
         child_feat = child['feature'].lower() if child else 'gene'
         # Build gene ID
@@ -562,6 +601,9 @@ def fix_gb_origin_lines(lines, args):
         # In most of cases, the mitochondria protein-coding gene only has CDS entries, so the child only count CDS entries here.
         # As for ncRNA gene, child is transcript level
         if child:
+            # Child features inherit the strand from parent gene
+            child['strand'] = grec['strand']
+            
             child_count = grp.get('child_count', 0) + 1
             grp['child_count'] = child_count
             if child_feat == 'cds':
@@ -825,6 +867,19 @@ def process_all(args):
             print(msg)
     return merged, all_drops, metrics
 
+def validate_args(args):
+    """Validate command-line arguments and ensure required combinations are present."""
+    gb_formats = False
+    for fmt, _ in args.I:
+        if fmt.lower() == "gb":
+            gb_formats = True
+            break
+    
+    if gb_formats and not args.gbf:
+        raise ValueError("The --gbf option is required when using the 'gb' format with -I")
+    
+    return args
+
 def main():
     parser = argparse.ArgumentParser(
         description="GFF combine & fix tool. Processes all input files, writes intermediate _fix.gff files, then merges them into merged_fix.gff."
@@ -851,7 +906,16 @@ def main():
                     help="Override sequence name for gb_origin input GFF.")
     parser.add_argument("--gb-source", type=str, default=None,
                     help="Specify source field for GB input. If provided, this value is used in the second column; otherwise, default is '.'.")
+    parser.add_argument("--gbf", type=str, default=None,
+                    help="Path to GenBank file (.gb/.gbf) to extract strand information. Required when using '-I gb'.")
+    
     args = parser.parse_args()
+
+    # Validate the arguments
+    try:
+        args = validate_args(args)
+    except ValueError as e:
+        parser.error(str(e))  # This will print the error message and exit
     
     csv_data = load_csv(args.csv)
     merged, all_drops, metrics = process_all(args)
