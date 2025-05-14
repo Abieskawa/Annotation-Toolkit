@@ -9,7 +9,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 
 def usage():
-    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [--organelletable <table_num>] [-d <outputdir>]".format(sys.argv[0]))
+    print("Usage: {} -g <input_genome> -r <input_gff> -p <file_prefix> -a <annotator> [-v] [--nameprefix <header_prefix>] [--pep_mitos <mitos_fasta>] [--pep_braker <braker_fasta>] [--genbank <genbank_file>] [--organelletable <table_num>] [-d <outputdir>]".format(sys.argv[0]))
     sys.exit(1)
 
 def run_command(cmd, shell=False):
@@ -264,6 +264,42 @@ def translate_mito_cds(cds_fa: str, gene_fa: str, pep_out: str, table):
             prot = str(Seq(trimmed).translate(table=table, to_stop=True, cds=False))
             out.write(f">{matched}.p\n{prot}\n")
 
+def extract_proteins_from_genbank(genbank_file, pep_out, header_prefix):
+    """
+    Extract protein sequences directly from GenBank file features.
+    Uses the same naming convention as the original translate_mito_cds function.
+    """
+    protein_records = []
+    
+    with open(genbank_file) as handle:
+        for record in SeqIO.parse(handle, "genbank"):
+            for feature in record.features:
+                if feature.type == "CDS":
+                    # Extract gene name
+                    gene_name = None
+                    if "gene" in feature.qualifiers:
+                        gene_name = feature.qualifiers["gene"][0]
+                    elif "product" in feature.qualifiers:
+                        gene_name = feature.qualifiers["product"][0]
+                    
+                    # Extract protein sequence
+                    if "translation" in feature.qualifiers:
+                        protein_seq = feature.qualifiers["translation"][0]
+                        
+                        # Use the same naming convention as in the original code
+                        if gene_name:
+                            # Format the ID similarly to how translate_mito_cds would
+                            protein_id = f"{header_prefix}_MT_{gene_name}"
+                            protein_records.append((f">{protein_id}.p", protein_seq))
+    
+    # Write to output file
+    with open(pep_out, "w") as fout:
+        for header, seq in protein_records:
+            fout.write(f"{header}\n{seq}\n")
+    
+    print(f"Extracted {len(protein_records)} protein sequences from GenBank file and wrote to: {pep_out}")
+    return
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pipeline using a GFF input (converted to GTF) to generate BED/FASTA outputs at gene, intron, and transcript levels"
@@ -276,6 +312,7 @@ def main():
     parser.add_argument("--nameprefix", help="Header prefix for FASTA entries. Defaults to file prefix if not provided.", default=None)
     parser.add_argument("--pep_mitos", help="Optional mitos peptide FASTA file provided by the user", default=None)
     parser.add_argument("--pep_braker", help="Optional braker peptide FASTA file provided by the user", default=None)
+    parser.add_argument("--genbank", help="GenBank file to extract protein sequences from", default=None)
     parser.add_argument("--organelletable", type=int, help="Genetic-code table ID/name for Bio.Seq.translate; if provided, will translate CDS records", default=None)
     parser.add_argument("-d", "--outputdir", help="Specify the output directory name (default: MOLAS_input)", default="MOLAS_input")
     args = parser.parse_args()
@@ -387,11 +424,17 @@ def main():
 
     # ----- Peptide FASTA Processing -----
     processed_pep_files = []
-    if args.pep_mitos:
+    
+    # Add GenBank protein extraction if specified
+    if args.genbank:
+        genbank_pep = f"{file_prefix}_{annotator}_pep_genbank.fa"
+        extract_proteins_from_genbank(args.genbank, genbank_pep, header_prefix)
+        processed_pep_files.append(genbank_pep)
+    elif args.pep_mitos:
         out_pep_mitos = f"{file_prefix}_{annotator}_pep_mitos.fa"
         process_pep_file(args.pep_mitos, out_pep_mitos, header_prefix, "mitos")
         processed_pep_files.append(out_pep_mitos)
-    if args.organelletable:
+    elif args.organelletable:
         if Seq is None:
             sys.exit("ERROR: Biopython is not installed but --organelletable was requested")
         mito_pep = f"{file_prefix}_{annotator}_pep_mito.fa"
@@ -402,6 +445,7 @@ def main():
         out_pep_braker = f"{file_prefix}_{annotator}_pep_braker.fa"
         process_pep_file(args.pep_braker, out_pep_braker, header_prefix, "braker")
         processed_pep_files.append(out_pep_braker)
+    
     if processed_pep_files:
         final_pep = pep_fa_final  # final peptide FASTA file name
         with open(final_pep, "w") as fout:
