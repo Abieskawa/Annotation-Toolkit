@@ -581,6 +581,7 @@ def run_structural(args):
             "docker", "run", "--rm",
             "-v", f"{os.path.abspath(protein_dir)}:/data",
             "-v", f"{mount_dir}:/output",
+            "-u", "root",
             "-w", "/output",
             args.busco_docker_image,
             "busco",
