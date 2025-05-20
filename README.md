@@ -1,7 +1,7 @@
 # Annotation-Toolkit
-This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools does not make it open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding gene, ncRNA, mitochondria gene. Codes for functional annotation for protein-coding gene is recorded here, too. We recommend read and run everything with your genome first to know every details, and any adjustment might require refer to your genome, if you are familar with the workflow, then switch to the nextflow and docker.
+This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools does not make it open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding, ncRNA, mitochondria genes. Codes for functional annotation for protein-coding gene are also recorded here. We recommend read and run everything with your genome first to know every detail and potential issues.
 
-This script has been tested on beltfish, marine tialpia, asian hard clam.
+This script has been tested on beltfish, tialpia 2 strains, and asian hard clam.
 
 # Check the received genome quality
 Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is necessary)
@@ -10,9 +10,37 @@ Check the assembly information, BUSCO, and FCS-gx/adapter (and clean if it is ne
 python {the path of this directory}/assembly_quality_check_v5.py {fasta file} 
 ```
 ### Check with BUSCO genome mode
-The miniprot is recommended to apply here. Please start a docker of BUSCO first and run the command below. It takes less an hour (threads = 128).
+The miniprot is recommended to apply here. Please start a docker of BUSCO first and run the command within. It takes less an hour (threads = 128).
 ```
 nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} -o {output dir basename} --miniprot{metaeuk} --out_path {output directory} > run_busco_genome_miniprotlog 2>&1 &
+```
+## Check if mitochondria genome exists
+[*mitoZ*](https://github.com/linzhi2013/MitoZ) v3.6
+```
+mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --min_abundance 0
+```
+## Extract mitochondria and nucleus chromosomes (Longest N)
+```
+python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
+``` 
+
+## Assmeble and annotate mitochondrial genome
+NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi) 
+Ex. fish genetic code: 2, asian hard clam genetic code: 5
+Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, GeSeq, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.
+[*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.
+[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, not gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.
+[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container I can run whole pipeline.
+mitoZ 3.6
+```
+#Assembler: megahit, spades, mitoassemble
+mitoz all --outprefix {prefix of output file} --thread_number 128 --workdir {wd} --clade {clade} --genetic_code {genetic code} --species_name {species name} --fq1 {gzipped/ungzipped R1} --fq2 {gzipped/ungzipped R2} --insert_size {WGS insert len} --requiring_taxa {clade} --memory 200 --data_size_for_mt_assembly 0 --assembler {megahit, spades, mitoassemble}
+```
+
+MitoHiFi 3.0.0_cv1 docker
+```
+nohup mitohifi.py -r {hihi raw reads}  -f {reference fasta} -g {reference .gbk file} -t 128 -d -a animal -o {genetic code} > mitohifi.log 2>&1 &
+bio gff final_mitogenome.gb > final_mitogenome.gff
 ```
 
 ### Check with FCS adaptor/gx
@@ -40,16 +68,7 @@ cat {original genome fasta} | python3 {the path of this directory}/fcs.py clean 
 Note
 *If FCS-adapter/gx detect the contamination, users can decide whether they remove the candidates or not. If users modify the sequence, please rememeber to check BUSCO and basic statistics again*
 
-## Check which scaffold is mitochondria genome
-[*mitoZ*](https://github.com/linzhi2013/MitoZ) v3.6
-```
-mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --min_abundance 0
-```
 
-## Extract mitochondria and nucleus chromosomes (Longest N)
-```
-python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
-``` 
 # Repeat soft masking
 Run repeat masking with RepeatModler, RepeatMasker and second-time TRF (followed the instruction from Braker3 2024 paper)
 ```
@@ -62,38 +81,18 @@ nohup bash -c "time ({the path of this directory}/trf_mask.sh -i {genome after r
 The generated table can sometimes hard to interpret. As a result, user can summarize by themselves.
 ```
 #buildSummary.pl is already built inside the tetools docker.
-python ../Annotation-Toolkit/generate_karyotype.py -n 19 00_annotation_start_genome/MTW_genome_clean_nuclear.fasta | awk '{print $4 "\t" $6}' | sed 's/  */\t/g' RepeatCount.tsv > RepeatCount.tsv
+python ../Annotation-Toolkit/generate_karyotype.py -n {longest x scaffold} {genome fasta} | awk '{print $3 "\t" $6}' | sed 's/  */\t/g' > RepeatCount.tsv
 [within tetools docker] buildSummary.pl -genome RepeatCount.tsv {input genome}.out > repeat_report.txt
-python {the path of this directory}/summarize_buildSummary.py repeat_report.txt > 03_SoftMask/Repeatsummary.txt
+python {the path of this directory}/summarize_buildSummary.py 03_SoftMask/epeat_report.txt > 03_SoftMask/Repeatsummary.txt
 ```
 # Structural Annotation 
 ## Run mitochondria Annotation with mitos
-NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi) 
-Ex. fish genetic code: 2, asian hard clam genetic code: 5
-Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, GeSeq, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.
-
-[*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.
-[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, not gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.
-[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container I can run whole pipeline.
-
 Version: runmitos.py 2.1.9
 ```
 runmitos.py -i {input mitochondria genome} -c {code for different species} -R ../MITOS2-refdata/ -r refseq89m -o 06_mitos/ --best --debug
 
 #Check and adjust if any gene span the split point
 python ../Annotation-Toolkit/check_adjust_mito.py -f 00_annotation_start_genome/tig00000002_candidate_mt.fasta -g 06_mitos/result.gff -o 00_annotation_start_genome/M_tai_adjusted_mitochondria.fasta -i 00_annotation_start_genome/adjust_log.txt --margin 0
-```
-mitoZ 3.6
-```
-#Assembler: megahit, spades, mitoassemble
-mitoz all --outprefix {prefix of output file} --thread_number 128 --workdir {wd} --clade {clade} --genetic_code {genetic code} --species_name {species name} --fq1 {gzipped/ungzipped R1} --fq2 {gzipped/ungzipped R2} --insert_size {WGS insert len} --requiring_taxa {clade} --memory 200 --data_size_for_mt_assembly 0 --assembler {megahit, spades, mitoassemble}
-
-```
-
-MitoHiFi 3.0.0_cv1 docker
-```
-nohup mitohifi.py -r {hihi raw reads}  -f {reference fasta} -g {reference .gbk file} -t 128 -d -a animal -o {genetic code} > mitohifi.log 2>&1 &
-bio gff final_mitogenome.gb > final_mitogenome.gff
 ```
 
 ## Run ncRNA Annotation
@@ -144,7 +143,7 @@ d.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busc
 Remember to make everything 777 or any similar allow BUSCO docker to access the data.
 ```
 sudo chmod 777 {wd}
-perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --gff3
+perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --printIntron --gff3
 ```
 
 ## Preprocess the output before running functional annotation
@@ -197,9 +196,9 @@ nohup diamond makedb --in nr/nr.000-125.fasta --threads 128 -d diamond_nr/nr.000
 ```
 ### Run Diamond blastp NR
 ```
-nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_beltfish_v2_MOLAS_input/FASTA/beltfish_v2_combined_pep.fa -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nulcear/beltfish_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
+nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_{output prefix}_FASTA/{protein fasta} -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nulcear/{output prefix}_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
 
-python ../Annotation-Toolkit/eva_annotation.py diamond-nr -p {input protein sequence} -d 10_diamond_blastp/{output prefix}_diamond.tsv -o 10_diamond_blastp/{output prefix}
+python ../Annotation-Toolkit/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp_mito_nulcear/{output prefix}_diamond.tsv -o 10_diamond_blastp/{output prefix}
 ```
 
 ## Run DeepTMHMM
@@ -214,6 +213,7 @@ Note that it can take days(~2 days) to download, please stay calm and be patient
 *Besises, the KAAS file structure can be modified during the update of the DB, this script will be updated over time.* 
 ```
 nohup python3 ../../Annotation-Toolkit/downloadkaas.py "https://www.genome.jp/kaas-bin/kaas_main?mode=user&id=1739414180&key=9Ze6Wzzp" > download.log 2>&1 &
+python ../Annotation-Toolkit/eva_annotation.py kaas 10_kaas_mito_nuclear/query.ko 10_kaas_mito_nuclear/
 ```
 
 ## Run InterProScan
@@ -227,9 +227,14 @@ python ../Annotation-Toolkit/eva_annotation.py interpro -p 07_renamed_braker3_v3
 #Extract the info MOLAS ask for
 python ../../Annotation-Toolkit/interproscan_extract.py -in interproscan_result.tsv -p marine_tilapia
 ``` 
+# Venn diagram of Annotated Gene
+``` 
+[within R conda env]{the path of this directory}/vennplot.r -i GO 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_go.tsv -i IPR 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_ipr.tsv -i diamond 11_diamond_blastp_mito_nulcear/{file prefix}_mito_nuclear.informative_gene_list.tsv -i KAAS 12_kaas_mito_nuclear/kaas_annotated_genes.tsv -a {file prefix}_MOLAS_input/FASTA/{file prefix}_combined_pep.fa -o functional_venn.png
+``` 
+
 ## Upload to MOLAS genome browser
 ``` 
-python ../Annotation-Toolkit/molas_genome_browser.py -g ../04_SplitMitoNuclear/beltfish_genome_1_nuclear_mito_reconstruct.fasta -r ../07_merge_gff/merged_fix.gff -p beltfish_v2 -n ../11_diamond_blastp_mito_nulcear/beltfish_diamond.tsv
+python ../Annotation-Toolkit/molas_genome_browser.py -g {genome fasta} -r {gff} -p {file prefix} -n {diamond tsv}
 ``` 
 ## Draw Circos plot
 ```
