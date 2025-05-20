@@ -37,7 +37,8 @@ Description:
 Options:
   -i NAME FILE     Add a gene list with a name.
                    Example: -i GO go_genes.tsv
-  -a FILE          Add a gene list with the default name 'all' from a FASTA file.
+  -a FILE          Add a gene list with the default name 'all' from a protein/gene FASTA file.
+                   But make sure only protein-coding gene inside fasta sequence.
   -o FILE          Specify output filename (default: intersect.png).
   -h, --help       Show this help message and exit.
 
