@@ -105,14 +105,14 @@ def main():
         print("STAR index exists, skipping build", flush=True)
 
     # process each sample (support both .fastq* and .fq* extensions)
-    fastq1 = glob.glob(os.path.join(args.reads_dir, '*_1.cleaned.fastq*'))
-    fq1    = glob.glob(os.path.join(args.reads_dir, '*_1.cleaned.fq*'))
+    fastq1 = glob.glob(os.path.join(args.reads_dir, '*1.cleaned.fastq*'))
+    fq1    = glob.glob(os.path.join(args.reads_dir, '*1.cleaned.fq*'))
     r1_files = sorted(set(fastq1 + fq1))
     samples = []
     for r1 in r1_files:
-        r2 = r1.replace('_1.cleaned', '_2.cleaned')
+        r2 = r1.replace('1.cleaned', '2.cleaned')
         paired = os.path.exists(r2)
-        sample = os.path.basename(r1).split('_1.cleaned')[0]    
+        sample = os.path.basename(r1).split('1.cleaned')[0]    
         if not paired:
             print(f"Single-end sample for {sample}, no R2 found: {r2}", flush=True)
         samples.append(sample)
