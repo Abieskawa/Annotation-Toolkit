@@ -6,6 +6,8 @@ import time
 import random
 import argparse
 import re  # for parsing the cleanbrite links
+import socket
+from urllib.error import URLError
 
 homepath = os.getcwd()
 
@@ -40,16 +42,80 @@ def main(resulturl):
     downloadmapdata()
 
 
-def download(downloadfile, url):
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as usock:
-            content = usock.read().decode('utf-8')
-        with open(downloadfile, 'w') as outputfile:
-            outputfile.write(content)
-        print(f"Downloaded {url} to {downloadfile}")
-    except Exception as e:
-        print(f"Error downloading {url}: {e}")
+def download(downloadfile, url, max_retries=5, initial_delay=2):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+    }
+    
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as usock:
+                content = usock.read().decode('utf-8')
+            with open(downloadfile, 'w') as outputfile:
+                outputfile.write(content)
+            print(f"Downloaded {url} to {downloadfile}")
+            return True
+        except (URLError, socket.error) as e:
+            if "Connection reset by peer" in str(e):
+                print(f"Connection reset on attempt {attempt+1}/{max_retries} for {url}: {e}")
+            else:
+                print(f"Error on attempt {attempt+1}/{max_retries} for {url}: {e}")
+            
+            if attempt < max_retries - 1:
+                # Add jitter to the delay
+                actual_delay = delay * (0.5 + random.random())
+                print(f"Retrying in {actual_delay:.2f} seconds...")
+                time.sleep(actual_delay)
+                # Exponential backoff
+                delay *= 2
+            else:
+                print(f"Failed to download {url} after {max_retries} attempts")
+                return False
+        except Exception as e:
+            print(f"Unexpected error downloading {url}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+            else:
+                return False
+
+
+def download_image(url, filepath, max_retries=5, initial_delay=2):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    }
+    
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as response:
+                with open(filepath, 'wb') as out_file:
+                    out_file.write(response.read())
+            print(f"Downloaded image: {url}")
+            return True
+        except (URLError, socket.error) as e:
+            if attempt < max_retries - 1:
+                actual_delay = delay * (0.5 + random.random())
+                print(f"Image download error on attempt {attempt+1}/{max_retries}: {e}")
+                print(f"Retrying in {actual_delay:.2f} seconds...")
+                time.sleep(actual_delay)
+                delay *= 2
+            else:
+                print(f"Failed to download image {url} after {max_retries} attempts: {e}")
+                return False
+        except Exception as e:
+            print(f"Unexpected error downloading image {url}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+            else:
+                return False
 
 
 def downloadhierdata(id, key):  # Add id and key parameters
@@ -139,11 +205,7 @@ def downloadmapdata():
         url = f"http://www.genome.jp/kegg-bin/show_pathway?map{x}"
         download(os.path.join(mappath, f"map{x}.html"), url)
         url2 = f"http://www.genome.jp/kegg/pathway/map/map{x}.png"
-        try:
-            urllib.request.urlretrieve(url2, os.path.join(mappath, f"map{x}.png"))
-            print(f"Downloaded image: {url2}")
-        except Exception as e:
-            print(f"Error downloading image {url2}: {e}")
+        download_image(url2, os.path.join(mappath, f"map{x}.png"))
         time.sleep(random.randint(1,3))
 
     print(f"updated: {counter}")
