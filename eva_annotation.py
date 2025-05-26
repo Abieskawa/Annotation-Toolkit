@@ -885,7 +885,7 @@ def run_nr(args):
     ratio_informative_all_p = pct(count_informative_p, num_proteins)
     ratio_informative_hits_p = pct(count_informative_p, num_hits_protein)
     output_lines.append(f"  Informative proteins (hits): {count_informative_p}")
-    output_lines.append(f"  Among ALL genes: {ratio_informative_all_p:.4f}%")
+    output_lines.append(f"  Among ALL proteins: {ratio_informative_all_p:.4f}%")
     output_lines.append(f"  Among proteins WITH hits: {ratio_informative_hits_p:.4f}%")
     output_lines.append("")
     output_lines.append("[Informative Ratio Among Genes With Hits]")
