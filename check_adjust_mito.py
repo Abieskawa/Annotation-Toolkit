@@ -80,11 +80,34 @@ def fix_genes_in_gff(gff_file, L):
             # Only look at "gene" entries exactly
             if feature_type != "gene":
                 continue
+            
+            # Handle the start position - check for boundary indicators first
+            start_str = parts[3].strip()
+            end_str = parts[4].strip()
+            
+            # Handle special boundary notations
+            touches_start_boundary = False
+            touches_end_boundary = False
+            
             try:
-                s = int(parts[3])
-                e = int(parts[4])
+                if start_str.startswith('<'):
+                    # Gene extends before the start of the sequence
+                    s = int(start_str[1:])  # Remove '<' and parse the number
+                    touches_start_boundary = True
+                else:
+                    s = int(start_str)
+                
+                if end_str.startswith('>'):
+                    # Gene extends beyond the end of the sequence
+                    e = int(end_str[1:])  # Remove '>' and parse the number
+                    touches_end_boundary = True
+                else:
+                    e = int(end_str)
+                    
             except ValueError:
+                # Skip genes with unparseable coordinates
                 continue
+            
             strand = parts[6].strip()
             genes.append({
                 "start": s,
@@ -92,10 +115,13 @@ def fix_genes_in_gff(gff_file, L):
                 "strand": strand,
                 "orig_start": s,
                 "orig_end": e,
-                "line": line
+                "line": line,
+                "touches_start_boundary": touches_start_boundary,
+                "touches_end_boundary": touches_end_boundary
             })
     
     # Process genes for problematic conditions
+    fixed_genes = []
     for g in genes:
         # Condition 1: gene length greater than half of the sequence length.
         cond_length = ((g["end"] - g["start"] + 1) > (L / 2))
@@ -106,7 +132,8 @@ def fix_genes_in_gff(gff_file, L):
                            for other in same_strand_genes)
         
         # Condition 3: gene touches the first or last base pair of the sequence.
-        cond_boundary = (g["start"] == 1 or g["end"] == L)
+        cond_boundary = (g["start"] == 1 or g["end"] == L or 
+                        g["touches_start_boundary"] or g["touches_end_boundary"])
         
         if cond_length or cond_overlap or cond_boundary:
             problematic_flag = True
@@ -114,24 +141,34 @@ def fix_genes_in_gff(gff_file, L):
             reason = []
             if cond_length:
                 reason.append("length greater than half of the sequence")
+                fixed_genes.append((1,g["start"]))
+                fixed_genes.append((g["end"], L))
+
             if cond_overlap:
                 reason.append("completely encloses another gene")
+                fixed_genes.append((1,g["start"]))
+                fixed_genes.append((g["end"], L))
+                
             if cond_boundary:
-                reason.append("touches sequence boundary")
+                if g["touches_start_boundary"]:
+                    reason.append("extends before sequence start")
+                    g["start"] = 1
+                if g["touches_end_boundary"]:
+                    reason.append("extends beyond sequence end")
+                    g["end"] = L
+                if g["start"] == 1:
+                    reason.append("starts at position 1")
+                if g["end"] == L:
+                    reason.append("ends at last position")
+                fixed_genes.append((g["start"], g["end"]))
             
             sys.stderr.write(f"Problematic gene detected: {g['line']}\n")
             sys.stderr.write(f"Original start: {g['orig_start']}, Original end: {g['orig_end']}\n")
             sys.stderr.write(f"Reasons: {', '.join(reason)}\n")
-            
-            # Add an extra forbidden interval covering from 1 to the original start.
-            extra_intervals.append((1, min(L, g["orig_start"])))
-            # Fix the gene: shift it so that it does not affect the first copy.
-            g["start"] = g["end"]
-            g["end"] = L + g["start"]
+        else:
+            fixed_genes.append((g["start"], g["end"]))
     
-    fixed_genes = []
-    for g in genes:
-        fixed_genes.append((g["start"], g["end"]))
+
     return fixed_genes, extra_intervals, problematic_flag
 
 def parse_gff(gff_file, margin, L):
@@ -146,9 +183,12 @@ def parse_gff(gff_file, margin, L):
     fixed_genes, extra_intervals, problematic_flag = fix_genes_in_gff(gff_file, L)
     intervals = []
     for (s, e) in fixed_genes:
-        start_forbid = max(1, s - margin)
-        end_forbid = min(L, e + margin)
-        intervals.append((start_forbid, end_forbid))
+        # Only create forbidden intervals for genes that are still within [1, L]
+        # Fixed genes that extend beyond L should not create forbidden intervals in the original range
+        if s <= L:  # Gene starts within the original sequence
+            start_forbid = max(1, s - margin)
+            end_forbid = min(L, e + margin)
+            intervals.append((start_forbid, end_forbid))
     intervals.extend(extra_intervals)
     merged = merge_intervals(intervals)
     return merged, problematic_flag
@@ -231,7 +271,7 @@ def main():
                         help="Output adjusted mitochondria FASTA file")
     parser.add_argument("-i", "--info", required=True,
                         help="Output split information text file")
-    parser.add_argument("--margin", type=int, default=5,
+    parser.add_argument("--margin", type=int, default=0,
                         help="Minimum distance (bp) from gene boundaries (default: 5)")
     args = parser.parse_args()
 
@@ -265,7 +305,11 @@ def main():
             if feature_type != "gene":
                 continue
             try:
-                s = int(parts[3])
+                start_str = parts[3].strip()
+                if start_str.startswith('<'):
+                    s = int(start_str[1:])
+                else:
+                    s = int(start_str)
                 e = int(parts[4])
             except ValueError:
                 continue
@@ -280,6 +324,7 @@ def main():
     
     # Step 4: Choose a safe split point
     if allowed_intervals:
+        print(f"Found allowed intervals: {allowed_intervals}")
         split_point, chosen_interval = choose_split_point(allowed_intervals)
         print(f"Chosen split point: {split_point} (from allowed interval {chosen_interval})")
     else:
