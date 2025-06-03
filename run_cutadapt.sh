@@ -14,9 +14,13 @@
 #          SRR26245751_1 10
 #          SRR26245751_2 10
 #
+#       => Alternatively, if using _R1/_R2 naming convention:
+#          4202P-HPGonad_R1 10
+#          4202P-HPGonad_R2 10
+#
 # Adapter sequences can be specified via -a1 and -a2. If not provided, the script will
 # look for a file named "adapter_list.txt" in the same directory as this script; if that
-# file isn’t found, default adapters are used:
+# file isn't found, default adapters are used:
 #
 #   For read1 (-a):
 #     AGATCGGAAGAG
@@ -79,6 +83,9 @@ For paired‐end data, the keys must match the actual filenames:
   e.g.,
     SRR26245751_1 10
     SRR26245751_2 10
+  or using _R1/_R2 convention:
+    4202P-HPGonad_R1 10
+    4202P-HPGonad_R2 10
 
 Options:
   -d      Working directory (required)
@@ -172,6 +179,17 @@ if [[ -z "$output_dir" ]]; then
 fi
 
 ############################################
+# Determine script directory before changing directories
+############################################
+# Handle both absolute and relative paths robustly
+if command -v realpath >/dev/null 2>&1 && realpath "$0" >/dev/null 2>&1; then
+  script_dir=$(cd "$(dirname "$(realpath "$0")")" && pwd)
+else
+  # Fallback method if realpath fails or is not available
+  script_dir=$(cd "$(dirname "$0")" && pwd)
+fi
+
+############################################
 # Convert directories to absolute paths
 ############################################
 initial_dir=$(pwd)
@@ -206,13 +224,13 @@ if [[ -n "$trim_front" ]]; then
       if [[ ${#fields[@]} -eq 2 ]]; then
         sample="${fields[0]}"
         trim_value="${fields[1]}"
-        # Expecting keys ending with _1 or _2; assign accordingly.
-        if [[ "$sample" =~ _1$ ]]; then
+        # Support both _1/_2 and _R1/_R2 naming conventions
+        if [[ "$sample" =~ _1$ ]] || [[ "$sample" =~ _R1$ ]]; then
           per_sample_trim_R1["$sample"]="$trim_value"
-        elif [[ "$sample" =~ _2$ ]]; then
+        elif [[ "$sample" =~ _2$ ]] || [[ "$sample" =~ _R2$ ]]; then
           per_sample_trim_R2["$sample"]="$trim_value"
         else
-          echo "Warning: Trim key '$sample' does not match expected pattern (_1 or _2); skipping."
+          echo "Warning: Trim key '$sample' does not match expected pattern (_1/_2 or _R1/_R2); skipping."
         fi
       else
         echo "Warning: Unexpected number of columns in trim file line: $line"
@@ -261,19 +279,29 @@ for file in *_[1].fastq *_[1].fq *_[1].fastq.gz *_[1].fq.gz; do
   
   ############################################
   # Determine front trim values for each read.
-  # (We append _1 and _2 to the basename to look up keys in the trim file.)
+  # Support multiple naming conventions for lookup keys
   ############################################
   sample_key_r1="${basename}_1"
   sample_key_r2="${basename}_2"
+  sample_key_r1_alt="${basename}_R1"
+  sample_key_r2_alt="${basename}_R2"
+  
   sample_trim_r1=""
   sample_trim_r2=""
+  
+  # Try to find trim values using different key formats
   if [[ -n "${per_sample_trim_R1[$sample_key_r1]}" ]]; then
     sample_trim_r1="${per_sample_trim_R1[$sample_key_r1]}"
+  elif [[ -n "${per_sample_trim_R1[$sample_key_r1_alt]}" ]]; then
+    sample_trim_r1="${per_sample_trim_R1[$sample_key_r1_alt]}"
   elif [[ -n "$global_trim_R1" ]]; then
     sample_trim_r1="$global_trim_R1"
   fi
+  
   if [[ -n "${per_sample_trim_R2[$sample_key_r2]}" ]]; then
     sample_trim_r2="${per_sample_trim_R2[$sample_key_r2]}"
+  elif [[ -n "${per_sample_trim_R2[$sample_key_r2_alt]}" ]]; then
+    sample_trim_r2="${per_sample_trim_R2[$sample_key_r2_alt]}"
   elif [[ -n "$global_trim_R2" ]]; then
     sample_trim_r2="$global_trim_R2"
   fi
@@ -281,10 +309,6 @@ for file in *_[1].fastq *_[1].fq *_[1].fastq.gz *_[1].fq.gz; do
   ############################################
   # Define adapter options for cutadapt
   ############################################
-  # Determine the directory where this script resides.
-  # Using realpath here so that if the script is called via a relative path,
-  # we still get the absolute directory.
-  script_dir=$(cd "$(dirname "$(realpath "$0")")" && pwd)
   adapter_fasta="$script_dir/adapter_list.txt"
   
   if [[ -n "$adapter1" ]]; then
