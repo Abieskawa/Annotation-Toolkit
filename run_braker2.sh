@@ -40,6 +40,7 @@ braker.pl --genome="$genome" \
           --prot_seq="$protein" \
           --threads="$threads" \
           --workingdir="$wd" \
-          --busco_lineage="$busco_lineage"
+          --busco_lineage="$busco_lineage" \
+          --gff3
 
 echo "Finished."

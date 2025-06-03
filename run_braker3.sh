@@ -64,6 +64,7 @@ braker.pl --genome="$genome" \
           --bam="$bam_files" \
           --threads="$threads" \
           --workingdir="$wd" \
-          --busco_lineage="$busco_lineage"
+          --busco_lineage="$busco_lineage" \
+          --gff3
 
 echo "Finished."
