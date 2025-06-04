@@ -3,7 +3,7 @@ This repository is the home place and notes for any tool applied to annotated th
 
 This script has been tested on beltfish, tialpia 2 strains, and asian hard clam.
 
-# File/Directory structure
+## File/Directory structure
 It is not necessary to follow this rule, but using this naming logic can make things tidier and easier to follow.
 ```
 file basename {ex. asian_hard_clam}
@@ -23,6 +23,7 @@ file basename {ex. asian_hard_clam}
 ├──05_raw_RNA
 ├──05_cleaned_RNA
 ├──05_RNA_mapping_star_2pass
+├──star_index
 ├──06_braker3
 ├──06_mitoz/06_mitohifi/06_mitos
 ├──06_ncRNA
@@ -45,7 +46,7 @@ output
 ├──MITOS2-refdata
 └──Rfam_db
 ```
-# Check the received genome quality
+# Check the quality of received genome 
 Check the assembly FCS-gx/adapter, mitochondrial contamination, and information, BUSCO, (and clean if it is necessary)
 
 ## Check if mitochondria genome exists
@@ -176,11 +177,14 @@ nohup bash -c "time cmscan --cpu 128 -Z {genome size param} --cut_ga --rfam --
 nohmmonly --tblout 06_ncRNA/{output file path}.tblout --fmt 2 --clanin ../Rfam_db/Rfam.clanin --oskip ../Rfam_db/Rfam.cm 00_start_annotation/{genome fasta sequence} > 06_ncRNA/{file basename}.cmscan 2> run_cmscan.log" > run_cmscan_time.log 2>&1 &
 
 #tRNAscan-se
-nohup bash -c "time tRNAscan-SE -E -I --detail --gff 06_ncRNA/{file basename}_tRNAscan.gff --stats 06_ncRNA/{file basename}.stats -d --thread 128 00_annotation_start_genome/{genome fasta sequence} -o 06_ncRNA/{file basename}_tRNAscan.out -f 06_ncRNA/{file basename}_tRNAscan.struct> run_{outfile name}_tRNA.log 2>&1" > run_{file basename}_tRNAscan_time.log 2>&1 &
+nohup bash -c "time tRNAscan-SE -E -I --detail -H --gff 06_ncRNA/{file basename}_tRNAscan.gff --stats 06_ncRNA/{file basename}.stats -d --thread 128 00_annotation_start_genome/{genome fasta sequence} -o 06_ncRNA/{file basename}_tRNAscan.out -f 06_ncRNA/{file basename}_tRNAscan.struct> run_{outfile name}_tRNA.log 2>&1" > run_{file basename}_tRNAscan_time.log 2>&1 &
 
 #(Optional)Filter with EukHighConfidenceFilter
 #It may require species specific criteria
 EukHighConfidenceFilter --result 06_ncRNA/{file basename}_tRNAscan.out --ss 06_ncRNA/{file basename}_tRNAscan.struct --output 06_ncRNA/ --prefix {file basename}_filter 
+
+#Filter gff file with EukHighConfidenceFilter output file
+python {the path of this directory}/trna_confidence_filter.py -i 06_ncRNA/{file basename}_tRNAscan.gff -c 06_ncRNA/{file basename}_filter.out -o {file basename}_tRNAscan_filter -d 06_ncRNA/ -v > 06_ncRNA/trna_confidence_filter.log
 
 #Insert intron to the tRNAscan-se gff file
 python {the path of this directory}/add_intron_trnascanse.py -i 06_ncRNA/{file basename}_tRNAscan.gff -o 06_ncRNA/{file basename}_tRNAscan_add_intron.gff
@@ -190,7 +194,7 @@ python {the path of this directory}/add_intron_trnascanse.py -i 06_ncRNA/{file b
 The script was modified with some informatiuon provided in https://github.com/gatech-genemark/ProtHint/issues/39
 Users should download odb12v0_level2species.tab.gz, odb12v0_levels.tab.gz, odb12v0_aa_fasta.gz, odb12v0_species.tab.gz can be downloaded from OrthoDB v12 website first.
 ```
-nohup python ../Annotation-Toolkit/extract_clade_proteins.py --clade {Mollusca} --levels odb12v0_levels.tab.gz --level2species odb12v0_level2species.tab.gz --fasta odb12v0_aa_fasta.gz --output Mollusca.fa --report-species --report-species --speciesmap odb12v0_species.tab.gz > extract_mollusca.log 2>&1 &
+nohup python {the path of this directory}/extract_clade_proteins.py --clade {Mollusca} --levels odb12v0_levels.tab.gz --level2species odb12v0_level2species.tab.gz --fasta odb12v0_aa_fasta.gz --output Mollusca.fa --report-species --report-species --speciesmap odb12v0_species.tab.gz > extract_mollusca.log 2>&1 &
 ```
 ## Run fasta simplification
 Without this steps, Braker3 script is still executable, but it will complain annoying messages. 
@@ -201,29 +205,43 @@ perl {the path of this directory}/simplifyFastaHeaders.pl {combined protein evid
 ## Prepare RNA evidence
 ### Illumina RNA-seq
 ```
+#Download from SRA DB
+nohup ~/tools/sratoolkit.3.1.1-ubuntu64/bin/fasterq-dump --split-files {SRA run ID} -O {outdir} --threads 128 > 05_raw_RNA_PacBio/download.log 2>&1 &
+
 #Purge adapters from illumina RNA-seq, and those being too short or having a quality score below 20 from RNA will be removed.
 nohup {the path of this directory}/run_cutadapt.sh -d {raw RNA-seq dir} -o {cleaned RNA-seq dir} -t {cpus} -l 5 -q 20 -Q 20 -f sample_trim.txt > run_cutadapt.log 2>&1 &
 
 #Run RNA mapping with STAR and keep only reads flagged as 2.
-nohup python {the path of this directory}/run_rna_mapping_star_2pass.py --genomepath {genome} --genomedir {genome index dir} --wd {dir for cleaned.fq/fastq} --out_dir {outdir} --threads 128 > run_rna_mapping.log 2>&1 &
+nohup python {the path of this directory}/run_rna_mapping.py --mode short-read --genomepath {nuclear genome} --genomedir {genome index dir} --wd {dir for cleaned.fq/fastq} --out_dir {outdir} --threads {cpus} > run_rna_mapping.log 2>&1 &
 ```
 ### PacBio Iso-seq
+In this step, cutadapt -g/-a/--poly-a was applied first to extract cDNA with 5'/3' primer and poly-A tails, and then those with 5'/3' primer inside the reads are discarded. Next, fastq file was transformed to unaligned bam with picard FastqToSam, then isoseq cluster (n*log(n) with qv guided info) was applied to generate longer reads. The short read data can be optionally polished isoseq data using the lordec-correct procedure to improve accuracy.
+
+Map the reads to genome with minmap2 as team braker2 recommend
+
 ```
+nohup python {the path of this directory}/isoseq_preprocess.py -i "A.fastq:B_1.fastq,B_2.fastq" -i -g "ADAPTER1{30}" -a ADAPTER3 
+
+nohup python {the path of this directory}/run_rna_mapping.py --mode iso-seq --genomepath {nuclear genome} --wd {dir for cleaned.fq/fastq} --out_dir {outdir} --threads {cpus}  >run_rna_mapping_isoseq.log 2>&1 &
 ```
  
 ## Run Braker3
 ```
+#Run with detached docker container
+docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output teambraker/braker3:tag(it should be isoseq if RNA data is isoseq) {the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}
+
+#Run within docker
 nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
 ```
 
 ## Check Braker3 result
 In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the regulation of gff file version is different version, please check my source code before applying my source code. 
+In this stage, our target is to check basic statistics of nuclear protein-coding genes.
 ```
 #-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
-#if you want to skip any chr/scaffold, use --split_scaffolds
-nohup python {the path of this directory}/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f {genome fasta} -b {file basename} -o 07_merge_gff/ -p 07_renamed_braker3/braker_rename
-d.aa  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/beltfish_v2/ --omark_dir omark_omamer_output --split_scaffolds MT > run_eva_braker.log 2>&1 &
+nohup python {the path of this directory}/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f {genome fasta} -b {file basename} -o 07_merge_gff/ -p {braker protein sequence}  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/{file basename}/ --omark_dir omark_omamer_output > run_eva_braker.log 2>&1 &
 ```
+
 ## Run gtf2gff
 Remember to make everything 777 or any similar allow BUSCO docker to access the data.
 ```
