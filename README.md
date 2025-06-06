@@ -54,12 +54,15 @@ Check the assembly FCS-gx/adapter, mitochondrial contamination, and information,
 ```
 mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} \
                    --workdir {dir} --thread_number {threads} \
-                   --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} 
-                   --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --min_abundance 0
+                   --requiring_taxa {Chordata,Arthropoda...} 
+                   --clade {Chordata,Arthropoda...} --min_abundance 0
 ```
 ## Extract mitochondria and nucleus chromosomes (Longest N)
 ```
-python {the path of this directory}/extract_nucleus_query_genome.py -i {the genome after cleaning with fcs} -on {nuclear fasta name} -os {optional, fasta name of mitochondria or chloreplast} -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
+python {the path of this directory}/extract_nucleus_query_genome.py \
+        -i {the genome after cleaning with fcs} -on {nuclear fasta name} 
+        -os {optional, fasta name of mitochondria or chloreplast} 
+        -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
 
 ## Assmeble and annotate mitochondrial genome
