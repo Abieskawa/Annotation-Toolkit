@@ -1,10 +1,10 @@
 # Annotation-Toolkit
-This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. Although NCBI can do annotation for the users, they may take some time to wait. Also, their annotation tools are not open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding, ncRNA, mitochondria genes. Codes for functional annotation for protein-coding gene are also recorded here. We recommend read and run everything with your genome first to know every detail and potential issues.
+This repository is the home place and notes for any tool applied to annotated the genome, including the command line, evaluation and download tool. While NCBI offers annotation services, users may experience delays. Also, their annotation tools are not open source until now, so a toolkit for annotation can allow the users to adjust according to their requirement. This toolkit includes structural annotation for protein-coding, ncRNA, mitochondria genes. Codes for functional annotation for protein-coding gene are also recorded here. We recommend read and run everything with your genome first to know every detail and potential issues.
 
-This script has been tested on beltfish, tialpia 2 strains, and asian hard clam.
+This script has been tested on beltfish, tialpia 2 strains, asian hard clam and japanese eel.
 
 ## File/Directory structure
-It is not necessary to follow this rule, but using this naming logic can make things tidier and easier to follow.
+It is not necessary to follow this naming rule, but using this naming logic can make things tidier and easier to follow.
 ```
 file basename {ex. asian_hard_clam}
 ├── 00_raw_genome
@@ -52,7 +52,10 @@ Check the assembly FCS-gx/adapter, mitochondrial contamination, and information,
 ## Check if mitochondria genome exists
 [*mitoZ*](https://github.com/linzhi2013/MitoZ) v3.6
 ```
-mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} --workdir {dir} --thread_number {threads} --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --min_abundance 0
+mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} \
+                   --workdir {dir} --thread_number {threads} \
+                   --requiring_taxa {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} 
+                   --clade {Chordata,Arthropoda,Echinodermata,Annelida-segmented-worms,Bryozoa,Mollusca,Nematoda,Nemertea-ribbon-worms,Porifera-sponges} --min_abundance 0
 ```
 ## Extract mitochondria and nucleus chromosomes (Longest N)
 ```
@@ -226,9 +229,11 @@ nohup python {the path of this directory}/run_rna_mapping.py --mode iso-seq --ge
 ```
  
 ## Run Braker3
+User can use TSEBRA to combine the prediction from isoseq and short-read.
 ```
 #Run with detached docker container
 docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output teambraker/braker3:tag(it should be isoseq if RNA data is isoseq) {the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}
+---> Result with Isoseq evidence can combine with teh result from short-read seq  
 
 #Run within docker
 nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
@@ -246,7 +251,11 @@ nohup python {the path of this directory}/eva_annotation.py structural -g 07_mer
 Remember to make everything 777 or any similar allow BUSCO docker to access the data.
 ```
 sudo chmod 777 {wd}
-perl gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --printIntron --gff3
+perl {the path of this directory}/gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --printIntron --gff3
+```
+## Merge the structural annotation result
+```
+python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
 ```
 
 ## Preprocess the output before running functional annotation
@@ -267,11 +276,6 @@ python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annota
 python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combined -v --nmitopep --table 5 --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_hard_clam_MOLAS_input
 ```
 
-## Merge the structural annotation result
-```
-python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
-```
-
 ## Transform gff to gtf3
 ```
 agat levels --expose
@@ -282,15 +286,6 @@ agat_convert_sp_gff2gtf.pl --gff merged_fix.gff -o merged_fix.gtf --gtf_version 
 # Keep in mind that the transformation will sjip tRNA pseudogene and biological region
 agat_convert_sp_gff2gtf.pl --gff merged_fix.gff -o merged_fix.gtf --gtf_version 3
 ```
-
-## Prepare protein before running Functional annotation
-Rename the output with specified prefix (prefix_{entry name}) and rename protein sequence and remove its stop codon.   
-```
-python {the path of this directory}/rename_gtf.py --gtf 06_braker3_v3/braker.gtf --prefix M_tai --out 07_renamed_braker3_v3/braker_renamed.gtf
-
-perl {the path of this directory}/gtf2gff.pl <braker_renamed.gtf --out=braker_renamed.gff --printExon --printUTR --printIntron --gff3
-```
-
 
 ## Prepare NR protein database
 ### Downolad NR DB
@@ -343,13 +338,15 @@ python {the path of this directory}/eva_annotation.py interpro -p 07_renamed_bra
 #Extract the info MOLAS ask for
 python {the path of this directory}/interproscan_extract.py -in interproscan_result.tsv -p {file basename}
 ``` 
-# Venn diagram of Annotated Gene
+## Venn diagram of Annotated Gene
 ``` 
 [within R conda env]{the path of this directory}/vennplot.r -i GO 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_go.tsv -i IPR 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_ipr.tsv -i diamond 11_diamond_blastp_mito_nulcear/{file prefix}_mito_nuclear.informative_gene_list.tsv -i KAAS 12_kaas_mito_nuclear/kaas_annotated_genes.tsv -a {file prefix}_MOLAS_input/FASTA/{file prefix}_combined_pep.fa -o functional_venn.png
 ``` 
-# Run RNA analysis
+## Run RNA analysis
+This process can generate table for gene/transcript level for further analysis
+#Although STAR can handle gff, it requires to be modified the normal gff format further
 ```
-
+nohup python {the path of this directory}/run_rna_analysis.py --reads-dir {short-read cleaned seq dir} --genome-fasta {nuclear(+mito) genome fasta} --annotation {merged.gtf} --out-dir RNAseq_ana --threads 128 --transcript-fpkm --transcript-counts --gene-fpkm --gene-tpm --gene-counts --merge-expression > RNAseq_ana.log 2>&1 &
 
 ```
 
@@ -384,6 +381,9 @@ simplifyFastaHeaders.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/48
 ### Braker (gtf to gff)
 gtf2gff.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/gtf2gff.pl#L347)
 genome_anno.py[link](https://github.com/Gaius-Augustus/Tiberius/blob/bfa9b37eaeca0794dd2b508c32e3f59bd28ec479/bin/genome_anno.py#L5)
+
+### Get aa seq from Tsebra
+Fix_Augustus_gtf.pl[link](https://github.com/Gaius-Augustus/BRAKER/issues/457#issuecomment-1050475171)
 
 ### RNAseq analysis
 stringtie (v2.2.3), prepDE.py[link](https://github.com/gpertea/stringtie) Note: prepDE.py3 in that repository was used here.
