@@ -54,14 +54,14 @@ Check the assembly FCS-gx/adapter, mitochondrial contamination, and information,
 ```
 mitoz findmitoscaf --fastafile {genome, gz supported here} --outprefix {prefix} \
                    --workdir {dir} --thread_number {threads} \
-                   --requiring_taxa {Chordata,Arthropoda...} 
+                   --requiring_taxa {Chordata,Arthropoda...} \
                    --clade {Chordata,Arthropoda...} --min_abundance 0
 ```
 ## Extract mitochondria and nucleus chromosomes (Longest N)
 ```
 python {the path of this directory}/extract_nucleus_query_genome.py \
-        -i {the genome after cleaning with fcs} -on {nuclear fasta name} 
-        -os {optional, fasta name of mitochondria or chloreplast} 
+        -i {the genome after cleaning with fcs} -on {nuclear fasta name} \
+        -os {optional, fasta name of mitochondria or chloreplast} \
         -n {the longest n seqs} -s {mitochondria,chloroplast,or the name of the target genome}
 ``` 
 
@@ -70,7 +70,7 @@ NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/
 Ex. fish genetic code: 2, asian hard clam genetic code: 5
 Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.
 [*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.
-[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, not gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.
+[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, nor gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.
 [*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container executable.
 
 mitoZ 3.6
@@ -78,7 +78,13 @@ mitoZ 3.6
 ```
 #Assembler: megahit, spades, mitoassemble
 cd 06_mitoz
-mitoz all --outprefix {prefix of output file, ex.japanese_eel_mito} --thread_number 128 --workdir {wd} --clade {clade} --genetic_code {genetic code} --species_name {species name} --fq1 {gzipped/ungzipped R1} --fq2 {gzipped/ungzipped R2} --insert_size {WGS insert len} --requiring_taxa {clade} --memory 200 --data_size_for_mt_assembly 0 --assembler {megahit, spades, mitoassemble}
+mitoz all --outprefix {prefix of output file, ex.japanese_eel_mito} \
+          --thread_number 128 --workdir {wd} --clade {clade} \
+          --genetic_code {genetic code} --species_name {species name} \
+          --fq1 {gzipped/ungzipped R1} --fq2 {gzipped/ungzipped R2} \
+          --insert_size {WGS insert len} --requiring_taxa {clade} \ 
+          --memory 200 --data_size_for_mt_assembly 0 \
+          --assembler {megahit, spades, mitoassemble}
 bio gff {output}.gbf > {output}.gff
 ```
 
@@ -86,13 +92,18 @@ MitoHiFi 3.0.0_cv1 docker
 *Note: We recommend to use mitoZ to annotate with sequence again, since there might be some relative rare start codon issue that MitoHiFi cannot idnetify.*
 ```
 cd 06_mitohifi
-nohup mitohifi.py -r {HiFi raw reads}  -f {reference fasta} -g {reference .gbk file} -t 128 -d -a animal -o {genetic code} > mitohifi.log 2>&1 & 
+nohup mitohifi.py -r {HiFi raw reads} -f {reference fasta} \
+                  -g {reference .gbk file} -t 128 -d -a animal \
+                  -o {genetic code} > mitohifi.log 2>&1 & 
 bio gff final_mitogenome.gb > final_mitogenome.gff
 ```
 
 If the gene across the split region, it is recommended to split on the safe places and annotate again
 ```
-python {the path of this directory}//check_adjust_mito.py -f 06_mitoz/{prefix of output file}.result/{prefix of output file}.japanese_eel_mito.megahit.mitogenome.fa.result/{prefix of output file}_{prefix of output file}.megahit.mitogenome.fa_mitoscaf.fa.gbf.fasta -g 06_mitoz/{out gff} -o 00_start_annotation/{file basename}_mito_adjusted.fa -i 00_start_annotation/{file basename}_mito_adjusted.info
+python {the path of this directory}/check_adjust_mito.py 
+        -f 06_mitoz/{prefix of output file}.result/{prefix of output file}.{prefix of output file}.megahit.mitogenome.fa.result/{prefix of output file}_{prefix of output file}.megahit.mitogenome.fa_mitoscaf.fa.gbf.fasta \
+        -g 06_mitoz/{out gff} -o 00_start_annotation/{file basename}_mito_adjusted.fa \
+        -i 00_start_annotation/{file basename}_mito_adjusted.info
 
 mitoz annotate --outprefix mitoz --thread_number {cpus} --fastafiles {file basename, cp adjusted fa to the 06_mitoz_adjusted dir}_mito_adjusted.fa --species_name {species name} --genetic_code {genetic code} --clade {clade}
 ```
@@ -103,7 +114,8 @@ gx manual and example: https://github.com/ncbi/fcs/wiki/FCS-GX-quickstart
 gx report info: https://github.com/ncbi/fcs/wiki/FCS-GX-output
 ```
 #Check contamination from adpator 
-{the path of this directory}/run_fcsadaptor.sh --fasta-input 00_raw_genome/{genome fasta} --output-dir 00_fcs_adaptor_mito_nuclear --euk
+{the path of this directory}/run_fcsadaptor.sh --fasta-input 00_raw_genome/{genome fasta} \
+                                               --output-dir 00_fcs_adaptor_mito_nuclear --euk
 
 #Remove the adaptor
 cat 00_raw_genome/{genome fasta} | python3 {the path of this directory}/fcs.py clean genome --action-report 00_fcs_adapter_mito_nuclear/fcs_adaptor_report.txt --output 00_fcs_adaptor_mito_nuclear/{genome fasta basename}_clean_adaptor.fasta --contam-fasta-out 00_fcs_adaptor_mito_nuclear/contam.fasta
@@ -148,7 +160,10 @@ Run repeat masking with RepeatModeler, RepeatMasker in TETools and second-time T
 docker run --name tetools-v1.89.2 -it -d —u root -v /home/abieskawa/output:/output --workdir /output/ dfam/tetools:1.89.2 bash
 
 #Repeat masking with RepeatMasker and RepeatModeler
-nohup bash -c "time ({the path of this directory}/repeatmask.sh -i /output/00_start_annotation/{genome fasta basename}_clean.fasta{or genome fasta in 00_raw_genome if there is no mitochondria or contamination issue in the raw genome} -o /output/{file basename}/ -t 128 -l {ex./output/Lib_fish/famdb} -s {'search target'} -f {'file basename'} --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
+nohup bash -c "time ({the path of this directory}/repeatmask.sh 
+           -i /output/00_start_annotation/{genome fasta basename}_clean.fasta{or genome fasta in 00_raw_genome if there is no mitochondria or contamination issue in the raw genome} \
+           -o /output/{file basename}/ -t 128 -l {ex./output/Lib_fish/famdb} -s {'search target'} \
+           -f {'file basename'} --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
 
 #Run repeat masking again with TRF
 nohup bash -c "time ({the path of this directory}/trf_mask.sh -i 03_SoftMask/{genome after repeat masking} -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
@@ -256,27 +271,23 @@ Remember to make everything 777 or any similar allow BUSCO docker to access the 
 sudo chmod 777 {wd}
 perl {the path of this directory}/gtf2gff.pl <braker.gtf --out=braker.gff --printExon --printUTR --printIntron --gff3
 ```
-## Merge the structural annotation result
-```
-python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
-```
 
 ## Preprocess the output before running functional annotation
 ```
 #mitos
-python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/beltfish_ncRNA.tblout -I trnascan-se 06_ncRNA/beltfish_tRNAscan_add_intron.gff -I braker3 07_renamed_braker3/braker_renamed.gff -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename T_jap --source cmscan --outdir 07_merge_gff/
+python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/{file basename}_ncRNA.tblout -I trnascan-se 06_ncRNA/{file basename}_tRNAscan_add_intron.gff -I braker3 {braker3 gff ex.06_braker3/braker.gff} -I mitos 06_mitos/result.gff --fmt2 --ignore-trna --basename {ex.T_jap} --source cmscan --outdir 07_merge_gff/
 
 #mitohifi/mitoz
-python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/marine_tilapia_MTW02_ncRNA.tblout -I
-trnascan-se 06_ncRNA/marine_tilapia_MTW02_tRNAscan_add_intron.gff -I braker3 07_braker3_v7_renamed/braker_renamed.gff -I gb 06_mitoz_adjusted/marine_tilapia_MTW02_mito_adjusted.gff --fmt2 --ignore-trna --basename O_nil --source cmscan --outdir 07_merge_gff/
+python {the path of this directory}/fix_merge_sort_gff.py -I infernal 06_ncRNA/{file basename}_ncRNA.tblout -I
+trnascan-se 06_ncRNA/{file basename}_tRNAscan_add_intron.gff -I braker3 {braker3 gff ex.06_braker3/braker.gff} -I gb 06_mitoz_adjusted/{file basename}_mito_adjusted.gff --fmt2 --ignore-trna --basename {ex.O_nil} --source cmscan --outdir 07_merge_gff/
 
 #Check format of merged file
 nohup python {the path of this directory}/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f {genome fasta} -b {file basename} -o 07_merge_gff/ --split_scaffolds {the scaffold desired to be ccalculated separately, ex. mitochondria} > run_eva_combined.log 2>&1 &
 
-python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito_adjusted.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combined -v --pep_mitos 06_mitos_adjusted/result.faa --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_hard_clam_MOLAS_input
+python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito_adjusted.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combined -v --pep_mitos 06_mitos_adjusted/result.faa --pep_braker 06_braker3/braker.aa --nameprefix M_tai -d 08_FASTA
 
 #mitohifi/mitoz
-python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/MTW_genome_clean_nuclear_mito.fasta -r 07_merge_gff/merged_fix.gff -p M_tai -a combined -v --nmitopep --table 5 --pep_braker 06_braker3_v3/braker.aa --nameprefix M_tai -d 08_asian_hard_clam_MOLAS_input
+python {the path of this directory}/molas_fasta-intron-lowercase.py -g 00_annotation_start_genome/{genome fasta} -r 07_merge_gff/merged_fix.gff -p {prefix. ex.M_tai} -a combined -v --nmitopep --table 5 --pep_braker 06_braker3/braker.aa --nameprefix {prefix. ex.M_tai} -d 08_FASTA
 ```
 
 ## Transform gff to gtf3
@@ -308,7 +319,7 @@ nohup diamond makedb --in nr/nr.000-125.fasta --threads 128 -d diamond_nr/nr.000
 ```
 ### Run Diamond blastp NR
 ```
-nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_{output prefix}_FASTA/{protein fasta} -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nuclear/{output prefix}_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
+nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_FASTA/{protein fasta} -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nuclear/{output prefix}_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
 
 python {the path of this directory}/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp{_mito}_nulcear/{output prefix}_diamond.tsv -o 11_diamond_blastp{_mito}_nulcear/{output prefix}
 ```
@@ -316,7 +327,7 @@ python {the path of this directory}/eva_annotation.py diamond-nr -p {input prote
 ## Run DeepTMHMM
 Make sure the server has NVIDIA GPU. It can use cpu though, but it will take longer time to finish the job.
 ```
-nohup python ../run_deeptmhmm.py 07_braker3_v7_renamed/braker_renamed_wout_asterisk.aa 08_deeptmhmm/ marine_tilapia > run_deeptmhmm.log 2>&1 &
+nohup python ../run_deeptmhmm.py 07_braker3_v7_renamed/braker_renamed_wout_asterisk.aa 08_deeptmhmm/ {file basename} > run_deeptmhmm.log 2>&1 &
 ```
 
 ## Download KAAS result
@@ -334,7 +345,7 @@ python {the path of this directory}/eva_annotation.py kaas 10_kaas{_mito}_nuclea
 We used v5.73-104.0, so the script eva_annotation.py and interproscan_extract might require modification if the version is not this one.
 Sometimes, it might require to adjust the memory limitation, be careful to any error messages.
 ```
-nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptide seq. ex.08_marine_tilapia_MTW02_MOLAS_input/FASTA/marine_tilapia_MTW02_combined_pep.fa} -goterms -f tsv --output-file-base 12_interproscan/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
+nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptide seq. ex.08_FASTA/marine_tilapia_MTW02_combined_pep.fa} -goterms -f tsv --output-file-base 12_interproscan/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
 
 python {the path of this directory}/eva_annotation.py interpro -p 07_renamed_braker3_v3/braker_renamed_wout_asterisk.aa -i 11_interproscan/interproscan_result.tsv -o 11_interproscan/{file basename}
 
@@ -360,9 +371,9 @@ python {the path of this directory}/molas_genome_browser.py -g {genome fasta} -r
 ## Draw Circos plot
 ```
 python {the path of this directory}/gff2circos.py --input ../07_merge_gff/merg
-ed_fix.gff --out gene_w100000.hist.txt --window 100000 --biotype protein_coding --genome_fasta ../04_SplitMitoNuclear/beltfish_genome_1_nuclear.fasta --seqids circos_target_seq.txt
+ed_fix.gff --out gene_w100000.hist.txt --window 100000 --biotype protein_coding --genome_fasta ../04_SplitMitoNuclear/{file basename}_genome_1_nuclear.fasta --seqids circos_target_seq.txt
 
-python scripts/repeatout2circos.py {RepeatMasker Output, ex.beltfish_genome_1.fasta.out} 17_circos/repeat_dna_w100000.hist.txt --targets {a one-column txt} --window 100000 --pattern DNA --fasta beltfish_genome_1.fasta
+python scripts/repeatout2circos.py {RepeatMasker Output, ex.beltfish_genome_1.fasta.out} 17_circos/repeat_dna_w100000.hist.txt --targets {a one-column txt} --window 100000 --pattern DNA --fasta {genome fasta}
 
 docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -outputdir /data
 ```
