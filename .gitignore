@@ -13,5 +13,8 @@ simplifyFastaHeaders.pl
 gtf2gff.pl
 genome_anno.py
 
+# Get aa seq from Tsebra
+Fix_Augustus_gtf.pl
+
 #Script from Stingtie
 prepDE.py
