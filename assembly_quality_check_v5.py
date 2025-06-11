@@ -116,10 +116,10 @@ def Percent(cutoff, seqlenlist, datalist):
 #####<<<Main>>>#####
 
 def main():
-    # usage: python3 assembly_quality_check_v4.py [Input FASTA file] [data type (optional)]
+    # usage: python3 assembly_quality_check_v5.py [Input FASTA file] [data type (optional)]
     
     if len(sys.argv) < 2:
-        print("Usage: python3 assembly_quality_check_v4.py [FASTA file] [data type (optional)]")
+        print("Usage: python3 assembly_quality_check_v5.py [FASTA file] [data type (optional)]")
         sys.exit(1)
     
     input_fasta = sys.argv[1]
