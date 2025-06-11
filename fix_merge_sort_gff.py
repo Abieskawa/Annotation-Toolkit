@@ -272,6 +272,15 @@ def convert_tblout_to_gff(lines, args):
     else:
         print("Error: You must specify --source", file=sys.stderr)
         sys.exit(1)
+    
+    # Load CSV data for filtering
+    csvdata = load_csv(args.csv)
+    
+    # Normalize ignore list - strip whitespace and convert to lowercase
+    ignore_list = []
+    if args.ignore:
+        ignore_list = [item.strip().lower() for item in args.ignore.split(',')]
+    
     for line in lines:
         if line.startswith("#"):
             continue
@@ -292,13 +301,37 @@ def convert_tblout_to_gff(lines, args):
             s_from, s_to = fs[7], fs[8]
             strand, score, ev = fs[9], fs[14], fs[15]
             feature = fs[2]
+        
         # No coordinate check is done – simply convert s_from and s_to.
         s = int(s_from)
         e = int(s_to)
-        if args.ignore_trna and "trna" in feature.lower():
-            dropped.append((line, "[infernal] Ignored tRNA (due to --ignore-trna)"))
-            continue
-        accepted.append("\t".join([seq, src, feature, str(s), str(e), score, strand, ".", "."]))
+        
+        # CSV-based filtering logic
+        should_ignore = False
+        if feature in csvdata:
+            # Get the Type information from CSV
+            type_info = csvdata[feature]['Type']
+            # Check if any ignore pattern matches the Type
+            for ignore_pattern in ignore_list:
+                for type_entry in type_info:
+                    if ignore_pattern in type_entry.lower():
+                        should_ignore = True
+                        dropped.append((line, f"[infernal] Ignored based on CSV Type '{type_entry}' matching --ignore '{ignore_pattern}': {feature}"))
+                        break
+                if should_ignore:
+                    break
+        else:
+            # If not in CSV, fall back to simple name matching (for backwards compatibility)
+            feature_normalized = feature.strip().lower()
+            for ignore_pattern in ignore_list:
+                if ignore_pattern in feature_normalized:
+                    should_ignore = True
+                    dropped.append((line, f"[infernal] Ignored by name matching --ignore '{ignore_pattern}': {feature}"))
+                    break
+        
+        if not should_ignore:
+            accepted.append("\t".join([seq, src, feature, str(s), str(e), score, strand, ".", "."]))
+    
     return accepted, dropped
 
 def fix_braker3(lines, args):
@@ -897,7 +930,7 @@ def main():
     parser.add_argument("--max-evalue", "-E", type=float, default=None,
                         help="Max evalue for infernal.")
     parser.add_argument("--fmt2", action="store_true", help="Infernal tblout with --fmt2 (>=27 fields).")
-    parser.add_argument("--ignore-trna", action="store_true", help="Skip tRNA hits in infernal.")
+    parser.add_argument("--ignore", type=str, help="Skip specified hits in infernal. Separate multiple entries with ',' (e.g., tRNA,rRNA)")
     parser.add_argument("--basename", type=str, default=None,
                         help="Prepend to generated gene IDs, e.g. 'M_tai' => 'M_tai_rrna.g1'.")
     parser.add_argument("--source", type=str, default=None,
