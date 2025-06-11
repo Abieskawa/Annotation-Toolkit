@@ -470,7 +470,7 @@ def main():
         print(f"Removed temporary GTF file: {gtf_generated}")
 
     # Move output files into user-specified output directory.
-    output_dir = f"./{args.outputdir}/FASTA/"
+    output_dir = f"./{args.outputdir}/"
     os.makedirs(output_dir, exist_ok=True)
     files_to_move = [
         output_intron_lowercase_genome,
