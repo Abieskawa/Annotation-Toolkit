@@ -7,7 +7,7 @@ This script has been tested on beltfish, tialpia 2 strains, asian hard clam and 
 It is not necessary to follow this naming rule, but using this naming logic can make things tidier and easier to follow.
 ```
 file basename {ex. asian_hard_clam}
-├── 00_raw_genome
+├──00_raw_genome
 ├──00_check_mitochondria
 ├──00_check_mitochondria_blastn
 ├──00_fcs_adaptor_mito_nuclear
@@ -32,7 +32,7 @@ file basename {ex. asian_hard_clam}
 ├──09_deeptmhmm_mito_nuclear
 ├──10_kaas_mito_nuclear
 ├──11_diamond_blastp_mito_nulcear
-├──12_interproscan
+├──12_interproscan_mito_nulcear
 └──13_RNA_ana
 ``` 
 Database file structure
@@ -68,19 +68,20 @@ python {the path of this directory}/extract_nucleus_query_genome.py \
 ## Assmeble and annotate mitochondrial genome
 NCBI genetic code for mitochondria (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi) 
 Ex. fish genetic code: 2, asian hard clam genetic code: 5
-Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.
-[*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.
-[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, nor gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.
-[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container executable.
+Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.\
+[*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.\
+[*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, nor gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.\
+[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container executable.\
 
-mitoZ 3.6
-#bio gff cannot accomodate complement(strand:-) info, so we will deal with it in the stage of fix and merge gffs later.
+Program: mitoZ v3.6\
+bio gff cannot accomodate complement(strand:-) info, so we will deal with it in the stage of fix and merge gffs later.
 ```
 #Assembler: megahit, spades, mitoassemble
 cd 06_mitoz
 mitoz all --outprefix {prefix of output file, ex.japanese_eel_mito} \
           --thread_number 128 --workdir {wd} --clade {clade} \
-          --genetic_code {genetic code} --species_name {species name} \
+          --genetic_code {genetic code} \
+          --species_name {species name} \
           --fq1 {gzipped/ungzipped R1} --fq2 {gzipped/ungzipped R2} \
           --insert_size {WGS insert len} --requiring_taxa {clade} \ 
           --memory 200 --data_size_for_mt_assembly 0 \
@@ -90,6 +91,7 @@ bio gff {output}.gbf > {output}.gff
 
 MitoHiFi 3.0.0_cv1 docker
 *Note: We recommend to use mitoZ to annotate with sequence again, since there might be some relative rare start codon issue that MitoHiFi cannot idnetify.*
+Note: bio gff cannot digest the stranded info in gff, so we will correct it during fix and merge stage.
 ```
 cd 06_mitohifi
 nohup mitohifi.py -r {HiFi raw reads} -f {reference fasta} \
@@ -98,7 +100,7 @@ nohup mitohifi.py -r {HiFi raw reads} -f {reference fasta} \
 bio gff final_mitogenome.gb > final_mitogenome.gff
 ```
 
-If the gene across the split region, it is recommended to split on the safe places and annotate again
+If the gene range cross the split region, it is recommended to split on the safe places and annotate again
 ```
 python {the path of this directory}/check_adjust_mito.py 
         -f 06_mitoz/{prefix of output file}.result/{prefix of output file}.{prefix of output file}.megahit.mitogenome.fa.result/{prefix of output file}_{prefix of output file}.megahit.mitogenome.fa_mitoscaf.fa.gbf.fasta \
@@ -126,7 +128,7 @@ cat 00_raw_genome/{genome fasta} | python3 {the path of this directory}/fcs.py c
 #Check contamination from other species
 python3 {the path of this directory}/fcs.py screen genome --fasta 00_fcs_adapter_mito_nuclear/{genome fasta basename}_clean_adaptor.fasta --out-dir 00_fcs_gx_mito_nuclear --tax-id {tax id} --gx-db ../fcs-db/gxdb
 
-#replace all in fifth column to EXCLUDE (depends on user).
+#replace all in fifth column to EXCLUDE or other tag (depends on user).
 #genome fasta basename, ex. MTW_genome.fa -> MTW_genome
 #tax id: hypothesized species or the related one
 
@@ -327,7 +329,7 @@ python {the path of this directory}/eva_annotation.py diamond-nr -p {input prote
 ## Run DeepTMHMM
 Make sure the server has NVIDIA GPU. It can use cpu though, but it will take longer time to finish the job.
 ```
-nohup python ../run_deeptmhmm.py 07_braker3_v7_renamed/braker_renamed_wout_asterisk.aa 08_deeptmhmm/ {file basename} > run_deeptmhmm.log 2>&1 &
+nohup python ../run_deeptmhmm.py 08_FASTA/{protein sequence fasta} 09_deeptmhmm_mito_nuclear/ {file basename} > run_deeptmhmm.log 2>&1 &
 ```
 
 ## Download KAAS result
@@ -336,7 +338,6 @@ Note that it can take days(~2 days) to download, please stay calm and be patient
 *Besises, the KAAS file structure can be modified during the update of the DB, this script will be updated over time.* 
 ```
 nohup python3 {the path of this directory}/downloadkaas.py {"download link from kaas"} > download.log 2>&1 &
-python {the path of this directory}/eva_annotation.py kaas 10_kaas_mito_nuclear/query.ko 10_kaas_mito_nuclear/
 
 python {the path of this directory}/eva_annotation.py kaas 10_kaas{_mito}_nuclear/query.ko 10_kaas{_mito}_nuclear
 ```
@@ -345,9 +346,9 @@ python {the path of this directory}/eva_annotation.py kaas 10_kaas{_mito}_nuclea
 We used v5.73-104.0, so the script eva_annotation.py and interproscan_extract might require modification if the version is not this one.
 Sometimes, it might require to adjust the memory limitation, be careful to any error messages.
 ```
-nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptide seq. ex.08_FASTA/marine_tilapia_MTW02_combined_pep.fa} -goterms -f tsv --output-file-base 12_interproscan/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
+nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptide seq. ex.08_FASTA/marine_tilapia_MTW02_combined_pep.fa} -goterms -f tsv --output-file-base 12_interproscan_mito_nulcear/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
 
-python {the path of this directory}/eva_annotation.py interpro -p 07_renamed_braker3_v3/braker_renamed_wout_asterisk.aa -i 11_interproscan/interproscan_result.tsv -o 11_interproscan/{file basename}
+python {the path of this directory}/eva_annotation.py interpro -p {input peptide seq.} -i 12_interproscan_mito_nulcear/interproscan_result.tsv -o 12_interproscan_mito_nulcear/{file basename}
 
 #Extract the info MOLAS ask for
 python {the path of this directory}/interproscan_extract.py -in interproscan_result.tsv -p {file basename}
