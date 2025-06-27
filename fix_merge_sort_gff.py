@@ -377,6 +377,11 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
     cnts, tcnts = defaultdict(int), defaultdict(int)
     
     if in_fmt == "trnascan-se":
+        # Add a simple counter for sequential tRNA numbering per sequence
+        trna_counters = defaultdict(int)
+        # Track old ID to new ID mappings for updating exon parents
+        id_mappings = {}
+        
         # First pass: build a set of pseudogene IDs (normalized to lower case)
         pseudogene_ids = set()
         for line in lines:
@@ -389,10 +394,12 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
             if typ == "pseudogene":
                 d = parse_attrs(parts[8])
                 pgid = d.get("ID", "").strip().lower()
-                if args.basename and not pgid.startswith(f"{args.basename}"):
-                    pgid = f"{args.basename}_{pgid}"
                 pseudogene_ids.add(pgid)
+        
         gene_type_map = {}
+        processed_exons = set()  # Track processed exons to avoid duplicates
+        
+        # First pass: process tRNA and pseudogene entries
         for line in lines:
             if line.startswith("#") or not line.strip():
                 out.append(line.rstrip("\n"))
@@ -402,65 +409,96 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                 out.append(line.rstrip("\n"))
                 continue
             seq, src, typ, start, end, score, strand, phase, attr = parts
-            # If the line is a pseudogene, output it normally.
-            if typ.lower() == "pseudogene":
+            
+            # Skip exon lines initially - we'll process them after tRNA entries
+            if typ.lower() == "exon":
+                continue
+            
+            # Handle all tRNA-like features (tRNA, pseudogene, etc.)
+            if typ.lower() in ("pseudogene", "trna", "rrna", "mirna", "snrna", "snorna") or typ in csvdata:
                 d = parse_attrs(attr)
+                original_id = d.get("ID", "")
+                
+                # Increment counter once per tRNA unit
+                trna_counters[seq] += 1
+                current_num = trna_counters[seq]
+                
+                # Create consistent IDs
                 if args.basename:
-                    if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                        d['ID'] = f"{args.basename}_{d['ID']}"
-                    if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
-                        d['Parent'] = f"{args.basename}_{d['Parent']}"
-                gene_id = d.get("ID", "").strip().lower()
-                gene_type_map[gene_id] = d.get("gene_biotype", typ).lower()
-                out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
-            # Else if the type exists in CSV (regular gene record)
-            elif typ in csvdata:
-                info = csvdata[typ]
-                toks = info['Type']
-                if any(x.lower() == "gene" for x in toks):
-                    child_tok = toks[1] if len(toks) > 1 else typ
-                    cnts[(seq, child_tok.lower()+"_g")] += 1
-                    if args.basename:
-                        gid = f"{args.basename}_{seq}_{normalize_type(child_tok + '_g')}{cnts[(seq, child_tok.lower() + '_g')]}"
-                    else:
-                        gid = gen_uid(seq, child_tok+"_g", cnts[(seq, child_tok.lower()+"_g")])
-                    pattrs = {'ID': gid, 'gene_biotype': child_tok, 'description': info['Description']}
-                    out.append("\t".join([seq, src, "gene", start, end, score, strand, phase, reconst_attrs(pattrs)]))
-                    gene_type_map[gid] = child_tok.lower()
-                    d = parse_attrs(attr)
-                    d['Parent'] = gid
-                    if args.basename:
-                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                            d['ID'] = f"{args.basename}_{d['ID']}"
-                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+                    gene_id = f"{args.basename}_{seq}_trna_g{current_num}"
+                    trna_id = f"{args.basename}_{seq}.trna{current_num}"
                 else:
-                    d = parse_attrs(attr)
-                    if args.basename:
-                        if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                            d['ID'] = f"{args.basename}_{d['ID']}"
-                        if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
-                            d['Parent'] = f"{args.basename}_{d['Parent']}"
-                    gene_id = d.get("ID", "").strip().lower()
-                    gene_type_map[gene_id] = d.get("gene_biotype", typ).lower()
-                    if typ.lower() == "pseudogene":
-                        pseudogene_ids.add(gene_id)
-                    out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+                    gene_id = f"{seq}_trna_g{current_num}"
+                    trna_id = f"{seq}.trna{current_num}"
+                
+                # Track the mapping from old ID to new ID
+                id_mappings[original_id] = trna_id
+                
+                # Handle pseudogenes differently - no gene parent
+                if typ.lower() == "pseudogene":
+                    # Create pseudogene entry without gene parent
+                    d['ID'] = trna_id
+                    # Remove Parent if it exists since pseudogenes don't have gene parents
+                    if 'Parent' in d:
+                        del d['Parent']
+                    
+                    # Update Name to use new sequential numbering
+                    if 'Name' in d:
+                        old_name = d['Name']
+                        # Extract the isotype and anticodon info if present
+                        if '-' in old_name:
+                            # Format: scaffold25.tRNA6063-AspGTC -> scaffold25.tRNA9-AspGTC
+                            parts = old_name.split('-')
+                            if len(parts) >= 2:
+                                d['Name'] = f"{seq}.tRNA{current_num}-{'-'.join(parts[1:])}"
+                            else:
+                                d['Name'] = f"{seq}.tRNA{current_num}"
+                        else:
+                            d['Name'] = f"{seq}.tRNA{current_num}"
+                    
+                    out.append("\t".join([seq, src, "pseudogene", start, end, score, strand, phase, reconst_attrs(d)]))
+                else:
+                    # For regular tRNA entries, create gene parent
+                    # Determine gene biotype
+                    if typ in csvdata:
+                        info = csvdata[typ]
+                        toks = info['Type']
+                        if any(x.lower() == "gene" for x in toks):
+                            gene_biotype = toks[1] if len(toks) > 1 else "tRNA"
+                            feature_type = typ
+                        else:
+                            gene_biotype = "tRNA"
+                            feature_type = typ
+                    else:
+                        gene_biotype = d.get('gene_biotype', 'tRNA')
+                        feature_type = typ
+                    
+                    # Create gene entry
+                    gene_attrs = {'ID': gene_id, 'gene_biotype': gene_biotype, 'description': 'tRNA'}
+                    out.append("\t".join([seq, src, "gene", start, end, score, strand, phase, reconst_attrs(gene_attrs)]))
+                    
+                    # Create tRNA entry
+                    d['ID'] = trna_id
+                    d['Parent'] = gene_id
+                    
+                    # Update Name to use new sequential numbering
+                    if 'Name' in d:
+                        old_name = d['Name']
+                        # Extract the isotype and anticodon info if present
+                        if '-' in old_name:
+                            # Format: scaffold25.tRNA914-ArgCCT -> scaffold25.tRNA8-ArgCCT
+                            parts = old_name.split('-')
+                            if len(parts) >= 2:
+                                d['Name'] = f"{seq}.tRNA{current_num}-{'-'.join(parts[1:])}"
+                            else:
+                                d['Name'] = f"{seq}.tRNA{current_num}"
+                        else:
+                            d['Name'] = f"{seq}.tRNA{current_num}"
+                    
+                    out.append("\t".join([seq, src, feature_type, start, end, score, strand, phase, reconst_attrs(d)]))
             else:
-                if typ.lower() == "exon":
-                    d = parse_attrs(attr)
-                    parent_id = d.get("Parent", "").strip().lower()
-                    if args.basename and not parent_id.startswith(f"{args.basename}"):
-                        parent_id = f"{args.basename}_{parent_id}"
-                    if parent_id in pseudogene_ids:
-                        continue
-                    else:
-                        if args.basename:
-                            if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
-                                d['ID'] = f"{args.basename}_{d['ID']}"
-                            if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
-                                d['Parent'] = f"{args.basename}_{d['Parent']}"
-                        out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
-                else:
+                # Handle other non-tRNA features in first pass
+                if typ.lower() not in ("exon",):
                     d = parse_attrs(attr)
                     if args.basename:
                         if 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
@@ -468,6 +506,49 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                         if 'Parent' in d and not d['Parent'].startswith(f"{args.basename}"):
                             d['Parent'] = f"{args.basename}_{d['Parent']}"
                     out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+
+        # Second pass: process exon lines using our ID mappings
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.rstrip("\n").split('\t')
+            if len(parts) != 9:
+                continue
+            seq, src, typ, start, end, score, strand, phase, attr = parts
+            
+            if typ.lower() == "exon":
+                d = parse_attrs(attr)
+                parent_id = d.get("Parent", "").strip()
+                
+                # Skip exons for pseudogenes that are already processed
+                if parent_id.lower() in pseudogene_ids:
+                    continue
+                
+                # Update parent reference using our ID mappings
+                if parent_id in id_mappings:
+                    new_parent = id_mappings[parent_id]
+                    d['Parent'] = new_parent
+                    
+                    # Keep original exon ID structure but update parent reference
+                    if 'ID' in d:
+                        old_exon_id = d['ID']
+                        # Extract exon number from original ID (e.g., .exon1, .exon2)
+                        if '.exon' in old_exon_id:
+                            exon_suffix = old_exon_id.split('.exon')[-1]
+                            d['ID'] = f"{new_parent}.exon{exon_suffix}"
+                        else:
+                            d['ID'] = f"{new_parent}.exon1"
+                    else:
+                        d['ID'] = f"{new_parent}.exon1"
+                else:
+                    # Fallback: add basename if needed
+                    if args.basename and not parent_id.startswith(f"{args.basename}"):
+                        d['Parent'] = f"{args.basename}_{parent_id}"
+                    if args.basename and 'ID' in d and not d['ID'].startswith(f"{args.basename}"):
+                        d['ID'] = f"{args.basename}_{d['ID']}"
+                
+                out.append("\t".join([seq, src, typ, start, end, score, strand, phase, reconst_attrs(d)]))
+                    
     elif in_fmt == "infernal":
         for line in lines:
             if line.startswith("#") or not line.strip():
@@ -521,6 +602,7 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
                 else:
                     seq, src, typ, start, end, score, strand, phase, attr = parts
                     out.append("\t".join(parts[:8] + [attr if attr else "."]))
+    
     final = []
     for l in out:
         if l.startswith("##gff-version"):
@@ -528,7 +610,7 @@ def fix_gff_lines(lines, csv_fp, in_fmt, args):
         final.append(l)
     final.insert(0, "##gff-version 3")
     return final
-
+    
 def parse_genbank_strands(gbf_path):
     """Parse a GenBank file and return a dictionary of gene names to strand info."""
     gene_strands = {}
