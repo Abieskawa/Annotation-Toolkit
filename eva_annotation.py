@@ -406,9 +406,9 @@ def run_structural(args):
             f.write(">> SUMMARY (Non-Split scaffolds):\n")
             f.write(f"Genes (unique): {n_genes_included}\n")
             f.write(f"Pseudogenes (unique): {n_pseudos_included}\n")
-            f.write(f"Single-exon genes (Protein-coding if available): {single_exon_genes}\n")
+            f.write(f"Single-exon genes (Protein-coding): {single_exon_genes}\n")
             f.write(f"mRNAs (unique): {n_mrna_included}\n")
-            f.write(f"Exons (unique, Protein-coding if available): {n_exon_included}\n")
+            f.write(f"Exons (unique, Protein-coding if only available): {n_exon_included}\n")
             f.write(f"Median gene length (all genes): {median_included}\n")
             f.write(f"Genome size (Non-Split): {genome_size_included}\n")
             if gene_biotype_available:
