@@ -118,7 +118,7 @@ def process_short_read_mode(args):
             "--runThreadN", str(args.threads),
             "--genomeDir", args.genomedir
         ]
-        run_with_conda_env(star_cmd, "annotation")
+        run_with_conda_env(star_cmd, "assembly_annotation")
 
     # List files in the working directory.
     all_files = os.listdir(args.wd)
@@ -167,7 +167,7 @@ def process_short_read_mode(args):
                     bam_sorted,
                     "-o", bam_flag2
                 ]
-                run_with_conda_env(samtools_cmd, "annotation")
+                run_with_conda_env(samtools_cmd, "assembly_annotation")
             else:
                 star_cmd = [
                     "STAR",
@@ -181,14 +181,14 @@ def process_short_read_mode(args):
                     "--outFileNamePrefix", out_prefix,
                     "--outSAMtype", "BAM", "SortedByCoordinate"
                 ]
-                run_with_conda_env(star_cmd, "annotation")
+                run_with_conda_env(star_cmd, "assembly_annotation")
                 samtools_cmd = [
                     "samtools", "view", "-b", "-f", "2",
                     "-@", str(args.threads),
                     bam_sorted,
                     "-o", bam_flag2
                 ]
-                run_with_conda_env(samtools_cmd, "annotation")
+                run_with_conda_env(samtools_cmd, "assembly_annotation")
         elif single:
             read_files_command = get_read_files_command(single)
             if os.path.isfile(log_progress) and os.path.isfile(sj_tab):
@@ -213,14 +213,14 @@ def process_short_read_mode(args):
                     "--outFileNamePrefix", out_prefix,
                     "--outSAMtype", "BAM", "SortedByCoordinate"
                 ]
-                run_with_conda_env(star_cmd, "annotation")
+                run_with_conda_env(star_cmd, "assembly_annotation")
                 samtools_cmd = [
                     "samtools", "view", "-b", "-f", "2",
                     "-@", str(args.threads),
                     bam_sorted,
                     "-o", bam_flag2
                 ]
-                run_with_conda_env(samtools_cmd, "annotation")
+                run_with_conda_env(samtools_cmd, "assembly_annotation")
         else:
             print(f"Error: Could not find paired or single-end FASTQ files for sample {sample}.")
             sys.exit(1)
@@ -283,7 +283,7 @@ def process_isoseq_mode(args):
         ]
         
         print(f"Converting SAM to BAM for sample {sample}...")
-        conda_cmd = ["conda", "run", "-n", "annotation"] + samtools_cmd
+        conda_cmd = ["conda", "run", "-n", "assembly_annotation"] + samtools_cmd
         print("Running command:", " ".join(conda_cmd))
         subprocess.run(conda_cmd, check=True)
         
