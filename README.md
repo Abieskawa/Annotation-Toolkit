@@ -71,7 +71,7 @@ Ex. fish genetic code: 2, asian hard clam genetic code: 5
 Other tools, such as GeSeq, mitoZ, MFannot, DeGeCI can also applied here. In my point of view, MitoZ, mitos is more recommended here, expecially for those non-model species, such as asian hard clam.\
 [*mitos*](https://gitlab.com/Bernt/MITOS): use relative obsolete reference file, but it output gff and provide other complete useful data, ex. protein sequence. The script for self-configured reference data is removed by the author, so user cannot update the reference by themselves.\
 [*mitoZ*](https://github.com/linzhi2013/MitoZ): It can manually add the reference sequence, but output only genebank file, nor gff or gtf. User can use all subcommend to start from Illumina WGS data to mitochondria genome and .gbk annotation file.\
-[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container executable.\
+[*MitoHiFi*](https://github.com/marcelauliano/MitoHiFi?tab=readme-ov-file): It can start from PacBio HiFi reads to mito genome and .gbk annotation file. Note that MitoHiFi 3.0.0_cv1 in [DockerHub](https://hub.docker.com/r/biocontainers/mitohifi/tags) is the latest container executable. However, I found that the gene prediction result of MitoHiFi may only have on the same strand, which is weird. As the result, i would recommend to use MitoZ.
 
 Program: mitoZ v3.6\
 bio gff cannot accomodate complement(strand:-) info, so we will deal with it in the stage of fix and merge gffs later.
@@ -159,13 +159,16 @@ Copy genome fastas (nuclear, mitochondria, nuclear+mitochondria) to 00_start_ann
 Run repeat masking with RepeatModeler, RepeatMasker in TETools and second-time TRF (followed the instruction from Braker3 2024 [paper](https://arxiv.org/abs/2403.19416))
 ```
 #Start a docker container with TETools
-docker run --name tetools-v1.89.2 -it -d —u root -v /home/abieskawa/output:/output --workdir /output/ dfam/tetools:1.89.2 bash
+docker run --name tetools-v1.89.2 -it -d -u root -v /home/abieskawa/output:/output --workdir /output/ dfam/tetools:1.89.2 bash
+
+docker exec -it tetools-v1.89.2 bash
 
 #Repeat masking with RepeatMasker and RepeatModeler
-nohup bash -c "time ({the path of this directory}/repeatmask.sh 
-           -i /output/00_start_annotation/{genome fasta basename}_clean.fasta{or genome fasta in 00_raw_genome if there is no mitochondria or contamination issue in the raw genome} \
-           -o /output/{file basename}/ -t 128 -l {ex./output/Lib_fish/famdb} -s {'search target'} \
-           -f {'file basename'} --log repeatmask.log 2>&1)" 2> run_repeatmask_time.log > /dev/null &
+nohup bash -c "time {the path of this directory}/repeatmask.sh 
+           -i /output/{file basename}/00_start_annotation/{genome fasta basename}_clean.fasta{or genome fasta in 00_raw_genome if there is no mitochondria or contamination issue in the raw genome} \
+           -o /output/{file basename}/ -t 128 \
+           -l {ex./output/RepeatMasker_DB/famdb} -s '{search target}' \
+           -f '{file basename}' --log repeatmask.log 2>&1" 2> run_repeatmask_time.log > /dev/null &
 
 #Run repeat masking again with TRF
 nohup bash -c "time ({the path of this directory}/trf_mask.sh -i 03_SoftMask/{genome after repeat masking} -o 04_TRF_mask -t 128 > run_trf_mask.log 2>&1)" 2> run_trf_time.log > /dev/null &
@@ -252,8 +255,8 @@ nohup python {the path of this directory}/run_rna_mapping.py --mode iso-seq --ge
 User can use TSEBRA to combine the prediction from isoseq and short-read.
 ```
 #Run with detached docker container
-docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output teambraker/braker3:tag(it should be isoseq if RNA data is isoseq) {the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}
 ---> Result with Isoseq evidence can combine with teh result from short-read seq  
+docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output/{file basenam} teambraker/braker3:tag(it should be isoseq if RNA data is isoseq) {the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}
 
 #Run within docker
 nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
@@ -264,7 +267,7 @@ In this script, I include calculate the total number of gene, mRNA, exon, protei
 In this stage, our target is to check basic statistics of nuclear protein-coding genes.
 ```
 #-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
-nohup python {the path of this directory}/eva_annotation.py structural -g 07_merge_gff/merged_fix.gff -f {genome fasta} -b {file basename} -o 07_merge_gff/ -p {braker protein sequence}  --busco_lineage actinopterygii_odb10 -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/{file basename}/ --omark_dir omark_omamer_output > run_eva_braker.log 2>&1 &
+nohup python {the path of this directory}/eva_annotation.py structural -g 06_braker3/braker.gff3 -f {genome fasta} -b {file basename} -o 06_braker3/ -p {braker protein sequence}  --busco_lineage {ex.actinopterygii_odb10} -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/{file basename}/ --omark_dir omark_omamer_output > run_eva_braker.log 2>&1 &
 ```
 
 ## Run gtf2gff
@@ -323,7 +326,7 @@ nohup diamond makedb --in nr/nr.000-125.fasta --threads 128 -d diamond_nr/nr.000
 ```
 nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_FASTA/{protein fasta} -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nuclear/{output prefix}_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
 
-python {the path of this directory}/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp{_mito}_nulcear/{output prefix}_diamond.tsv -o 11_diamond_blastp{_mito}_nulcear/{output prefix}
+python {the path of this directory}/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp{_mito}_nuclear/{output prefix}_diamond.tsv -o 11_diamond_blastp{_mito}_nuclear/{output prefix}
 ```
 
 ## Run DeepTMHMM
@@ -350,7 +353,7 @@ nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptid
 
 python {the path of this directory}/eva_annotation.py interpro -p {input peptide seq.} -i 12_interproscan_mito_nulcear/interproscan_result.tsv -o 12_interproscan_mito_nulcear/{file basename}
 
-#Extract the info MOLAS ask for
+#Extract the info that MOLAS ask for
 python {the path of this directory}/interproscan_extract.py -in interproscan_result.tsv -p {file basename}
 ``` 
 ## Venn diagram of Annotated Gene
@@ -369,6 +372,10 @@ nohup python {the path of this directory}/run_rna_analysis.py --reads-dir {short
 ``` 
 python {the path of this directory}/molas_genome_browser.py -g {genome fasta} -r {gff} -p {file prefix} -n {diamond tsv}
 ``` 
+
+## Detect centromere, gap and telomere
+
+
 ## Draw Circos plot
 ```
 python {the path of this directory}/gff2circos.py --input ../07_merge_gff/merg
@@ -384,22 +391,22 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 fcs.py/run_fcsadaptor.sh[link](https://github.com/ncbi/fcs)
 
 ### Repeat Annotation/masking
-TETools (v1.89.2)[link](https://github.com/Dfam-consortium/TETools) 
-TRF (v4.09)[link](https://github.com/Benson-Genomics-Lab/TRF)
-bedtools (v2.31.1)[link](https://github.com/arq5x/bedtools2)
-splitMfasta.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)
-parseTrfOutput.py[link](https://github.com/gatech-genemark/BRAKER2-exp/blob/34e9d1dfd7228128968063f76b37d29c73a39efc/bin/trf-scripts/parseTrfOutput.py)
+TETools (v1.89.2)[[link](https://github.com/Dfam-consortium/TETools)]
+TRF (v4.09)[[link](https://github.com/Benson-Genomics-Lab/TRF)]
+bedtools (v2.31.1)[[link](https://github.com/arq5x/bedtools2)]
+splitMfasta.pl[[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)]
+parseTrfOutput.py[[link](https://github.com/gatech-genemark/BRAKER2-exp/blob/34e9d1dfd7228128968063f76b37d29c73a39efc/bin/trf-scripts/parseTrfOutput.py)]
 
 ### protein preprocessing
-simplifyFastaHeaders.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/simplifyFastaHeaders.pl#L7)
+simplifyFastaHeaders.pl[[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/simplifyFastaHeaders.pl#L7)]
 
 ### Braker (gtf to gff)
-gtf2gff.pl[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/gtf2gff.pl#L347)
-genome_anno.py[link](https://github.com/Gaius-Augustus/Tiberius/blob/bfa9b37eaeca0794dd2b508c32e3f59bd28ec479/bin/genome_anno.py#L5)
+gtf2gff.pl[[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/gtf2gff.pl#L347)]
+genome_anno.py[[link](https://github.com/Gaius-Augustus/Tiberius/blob/bfa9b37eaeca0794dd2b508c32e3f59bd28ec479/bin/genome_anno.py#L5)]
 
 ### Get aa seq from Tsebra
-Fix_Augustus_gtf.pl[link](https://github.com/Gaius-Augustus/BRAKER/issues/457#issuecomment-1050475171)
+Fix_Augustus_gtf.pl[[link](https://github.com/Gaius-Augustus/BRAKER/issues/457#issuecomment-1050475171)]
 
 ### RNAseq analysis
-stringtie (v2.2.3), prepDE.py[link](https://github.com/gpertea/stringtie) Note: prepDE.py3 in that repository was used here.
-STAR (v2.7.11b)[link](https://github.com/alexdobin/STAR)
+stringtie (v2.2.3), prepDE.py[[link](https://github.com/gpertea/stringtie)] Note: prepDE.py3 in that repository was used here.
+STAR (v2.7.11b)[[link](https://github.com/alexdobin/STAR)]
