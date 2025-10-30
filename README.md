@@ -46,6 +46,9 @@ output
 ├──MITOS2-refdata
 └──Rfam_db
 ```
+# Environment
+
+
 # Check the quality of received genome 
 Check the assembly FCS-gx/adapter, mitochondrial contamination, and information, BUSCO, (and clean if it is necessary)
 
@@ -200,7 +203,7 @@ python {the path of this directory}//check_adjust_mito.py -f 06_mitoz/{prefix of
 awk '!/^>/ {sum += length($0)} END {print sum}' {genome fasta} -> genome size
 {genome size} * 2 / 10**6 = genome size param
 nohup bash -c "time cmscan --cpu 128 -Z {genome size param} --cut_ga --rfam --
-nohmmonly --tblout 06_ncRNA/{output file path}.tblout --fmt 2 --clanin ../Rfam_db/Rfam.clanin --oskip ../Rfam_db/Rfam.cm 00_start_annotation/{genome fasta sequence} > 06_ncRNA/{file basename}.cmscan 2> run_cmscan.log" > run_cmscan_time.log 2>&1 &
+nohmmonly --tblout 06_ncRNA/{file basename}.tblout --fmt 2 --clanin ../Rfam_db/Rfam.clanin --oskip ../Rfam_db/Rfam.cm 00_start_annotation/{genome fasta sequence} > 06_ncRNA/{file basename}.cmscan 2> run_cmscan.log" > run_cmscan_time.log 2>&1 &
 
 #tRNAscan-se
 nohup bash -c "time tRNAscan-SE -E -I --detail -H --gff 06_ncRNA/{file basename}_tRNAscan.gff --stats 06_ncRNA/{file basename}.stats -d --thread 128 00_annotation_start_genome/{genome fasta sequence} -o 06_ncRNA/{file basename}_tRNAscan.out -f 06_ncRNA/{file basename}_tRNAscan.struct> run_{outfile name}_tRNA.log 2>&1" > run_{file basename}_tRNAscan_time.log 2>&1 &
@@ -259,14 +262,15 @@ User can use TSEBRA to combine the prediction from isoseq and short-read.
 docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output/{file basenam} teambraker/braker3:tag(it should be isoseq if RNA data is isoseq) {the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}
 
 #Run within docker
-nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3_v3.log 2>&1)" 2> run_braker3_v3_time.log > /dev/null &
+nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3.log 2>&1)" 2> run_braker3_time.log > /dev/null &
 ```
 
 ## Check Braker3 result
-In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the regulation of gff file version is different version, please check my source code before applying my source code. 
+In this script, I include calculate the total number of gene, mRNA, exon, protein, single-exon, and median length of gene, gff_QC check, BUSCO, OMArk check. Since the gff file version may be different in newer version of braker3, please check my source code and results before and after applying it. 
 In this stage, our target is to check basic statistics of nuclear protein-coding genes.
 ```
-#-p: please input nuclear protein (braker has braker.aa output), BUSCO does not have non-nuclear database
+#-p: please input nuclear protein (braker has braker.aa output)
+#Note: BUSCO does not have non-nuclear database, so do not combine mitoz annotation result and check BUSCO value. 
 nohup python {the path of this directory}/eva_annotation.py structural -g 06_braker3/braker.gff3 -f {genome fasta} -b {file basename} -o 06_braker3/ -p {braker protein sequence}  --busco_lineage {ex.actinopterygii_odb10} -t 128 --busco_out_path BUSCO/ --busco_docker_image ezlabgva/busco:v5.8.2_cv1 --busco_workdir /home/abieskawa/output/{file basename}/ --omark_dir omark_omamer_output > run_eva_braker.log 2>&1 &
 ```
 
@@ -388,14 +392,14 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 
 ## Citation and the tools used in this pipeline
 ### FCS scripts
-fcs.py/run_fcsadaptor.sh[link](https://github.com/ncbi/fcs)
+fcs.py/run_fcsadaptor.sh [[link](https://github.com/ncbi/fcs)]
 
 ### Repeat Annotation/masking
-TETools (v1.89.2)[[link](https://github.com/Dfam-consortium/TETools)]
-TRF (v4.09)[[link](https://github.com/Benson-Genomics-Lab/TRF)]
-bedtools (v2.31.1)[[link](https://github.com/arq5x/bedtools2)]
-splitMfasta.pl[[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)]
-parseTrfOutput.py[[link](https://github.com/gatech-genemark/BRAKER2-exp/blob/34e9d1dfd7228128968063f76b37d29c73a39efc/bin/trf-scripts/parseTrfOutput.py)]
+TETools (v1.89.2) [[link](https://github.com/Dfam-consortium/TETools)]
+TRF (v4.09) [[link](https://github.com/Benson-Genomics-Lab/TRF)]
+bedtools (v2.31.1) [[link](https://github.com/arq5x/bedtools2)]
+splitMfasta.pl [[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)]
+parseTrfOutput.py [[link](https://github.com/gatech-genemark/BRAKER2-exp/blob/34e9d1dfd7228128968063f76b37d29c73a39efc/bin/trf-scripts/parseTrfOutput.py)]
 
 ### protein preprocessing
 simplifyFastaHeaders.pl[[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/simplifyFastaHeaders.pl#L7)]
