@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_fastp.py  (front-only trimming)
+run_fastp.py  
 
 Process paired-end FASTQ files with fastp.
 
@@ -170,9 +170,9 @@ def run_fastp(
         rtag1, rtag2 = ("R1", "R2") if style == "R" else ("1", "2")
 
         # ext is everything after first dot to keep .fastq.gz intact
-        ext = r1.split(".", 1)[1]
-        out1 = outdir / f"{base}_{rtag1}.cleaned.{ext}"
-        out2 = outdir / f"{base}_{rtag2}.cleaned.{ext}"
+        # ext = r1.split(".", 1)[1]
+        out1 = outdir / f"{base}_{rtag1}.cleaned.gz"
+        out2 = outdir / f"{base}_{rtag2}.cleaned.gz"
 
         # sample-specific front trims (prefer exact key; fall back to alt style; else global)
         key_r1 = f"{base}_{rtag1}"
@@ -212,7 +212,7 @@ def run_fastp(
         # Library-type sensible defaults
         if lib_type == "RNA":
             # PolyX (e.g., polyA/T) tails common in mRNA-Seq; keep polyG auto
-            cmd += ["-x", "--trim_poly_x"]
+            cmd += ["--trim_poly_x"]
 
         # Apply *front* trims if set  <-- uses fastp -f/-F
         if isinstance(trim_r1, int):
