@@ -169,8 +169,6 @@ def run_fastp(
         # preserve original style in output names
         rtag1, rtag2 = ("R1", "R2") if style == "R" else ("1", "2")
 
-        # ext is everything after first dot to keep .fastq.gz intact
-        # ext = r1.split(".", 1)[1]
         out1 = outdir / f"{base}_{rtag1}.cleaned.gz"
         out2 = outdir / f"{base}_{rtag2}.cleaned.gz"
 
