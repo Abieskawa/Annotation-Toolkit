@@ -169,8 +169,8 @@ def run_fastp(
         # preserve original style in output names
         rtag1, rtag2 = ("R1", "R2") if style == "R" else ("1", "2")
 
-        out1 = outdir / f"{base}_{rtag1}.cleaned.gz"
-        out2 = outdir / f"{base}_{rtag2}.cleaned.gz"
+        out1 = outdir / f"{base}_{rtag1}.cleaned.fastq.gz"
+        out2 = outdir / f"{base}_{rtag2}.cleaned.fastq.gz"
 
         # sample-specific front trims (prefer exact key; fall back to alt style; else global)
         key_r1 = f"{base}_{rtag1}"
