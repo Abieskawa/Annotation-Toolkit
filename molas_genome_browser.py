@@ -208,6 +208,9 @@ def join_extracted_with_nr(extracted_file, nr_bed, prefix):
                 row += [''] * (18 - len(row))
             tx = row[3]
             if tx in mapping:
+                # exonFrames:
+                # 0, 1, or 2 → the coding frame (how many bases into a codon the exon starts, relative to the CDS)
+                # -1 → non-coding exon (e.g., UTR-only exon or noncoding transcript)
                 geneName, cdsStartStat, cdsEndStat, exonFrames = mapping[tx]
                 row[12] = geneName
                 row[13] = cdsStartStat
@@ -262,41 +265,82 @@ def sanitize_lists_for_bigbed(bed_file):
       col18 exonFrames
 
     Fix by truncating/padding; exonFrames pads with -1 ("no coding frame").
+
+    This version keeps the SAME input/output behavior as before (in-place rewrite),
+    but PRINTS every padding/truncation event so you can inspect what happened.
     """
     tmp_file = bed_file + ".san.tmp"
     fixed = 0
+
+    def _preview(items, n=12):
+        if len(items) <= n:
+            return ",".join(items)
+        return ",".join(items[:n]) + f",...(+{len(items)-n})"
 
     with open(bed_file, 'r') as fin, open(tmp_file, 'w', newline='') as fout:
         reader = csv.reader(fin, delimiter='\t')
         writer = csv.writer(fout, delimiter='\t')
 
-        for row in reader:
+        for row_num, row in enumerate(reader, start=1):
             if len(row) < 18:
                 row += [''] * (18 - len(row))
 
+            tx = row[3] if len(row) > 3 else ""
+            chrom = row[0] if len(row) > 0 else ""
+            start = row[1] if len(row) > 1 else ""
+            end = row[2] if len(row) > 2 else ""
+
+            bc_raw = row[9]
             try:
                 bc = int(row[9])
             except Exception:
+                # preserve prior behavior: force blockCount to 1
                 bc = 1
                 row[9] = "1"
-
-            bs = _parse_list_field(row[10])
-            if len(bs) != bc:
                 fixed += 1
-                bs = (bs[:bc] + ["0"] * max(0, bc - len(bs)))
-                row[10] = _format_list_field(bs)
+                print(
+                    f"[sanitize][row {row_num}] tx={tx} {chrom}:{start}-{end} "
+                    f"blockCount invalid ('{bc_raw}') -> set to 1"
+                )
 
-            cs = _parse_list_field(row[11])
-            if len(cs) != bc:
+            # blockSizes (row[10])
+            bs_before = _parse_list_field(row[10])
+            if len(bs_before) != bc:
                 fixed += 1
-                cs = (cs[:bc] + ["0"] * max(0, bc - len(cs)))
-                row[11] = _format_list_field(cs)
+                action = "truncate" if len(bs_before) > bc else "pad"
+                bs_after = (bs_before[:bc] + ["0"] * max(0, bc - len(bs_before)))
+                print(
+                    f"[sanitize][row {row_num}] tx={tx} {chrom}:{start}-{end} "
+                    f"blockSizes {action}: bc={bc} len {len(bs_before)} -> {len(bs_after)} "
+                    f"before=({_preview(bs_before)}) after=({_preview(bs_after)})"
+                )
+                row[10] = _format_list_field(bs_after)
 
-            ef = _parse_list_field(row[17])
-            if len(ef) != bc:
+            # chromStarts (row[11])
+            cs_before = _parse_list_field(row[11])
+            if len(cs_before) != bc:
                 fixed += 1
-                ef = (ef[:bc] + ["-1"] * max(0, bc - len(ef)))
-                row[17] = _format_list_field(ef)
+                action = "truncate" if len(cs_before) > bc else "pad"
+                cs_after = (cs_before[:bc] + ["0"] * max(0, bc - len(cs_before)))
+                print(
+                    f"[sanitize][row {row_num}] tx={tx} {chrom}:{start}-{end} "
+                    f"chromStarts {action}: bc={bc} len {len(cs_before)} -> {len(cs_after)} "
+                    f"before=({_preview(cs_before)}) after=({_preview(cs_after)})"
+                )
+                row[11] = _format_list_field(cs_after)
+
+            # exonFrames (row[17])
+            ef_before = _parse_list_field(row[17])
+            if len(ef_before) != bc:
+                fixed += 1
+                action = "truncate" if len(ef_before) > bc else "pad"
+                ef_after = (ef_before[:bc] + ["-1"] * max(0, bc - len(ef_before)))
+                print(
+                    f"[sanitize][row {row_num}] tx={tx} {chrom}:{start}-{end} "
+                    f"exonFrames {action}: bc={bc} len {len(ef_before)} -> {len(ef_after)} "
+                    f"before=({_preview(ef_before)}) after=({_preview(ef_after)})"
+                )
+                row[17] = _format_list_field(ef_after)
 
             writer.writerow(row)
 

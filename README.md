@@ -15,8 +15,7 @@ file basename {ex. asian_hard_clam}
 ├──00_fcs_gx_mito_nuclear
 ├──00_fcs_gx_double_check_mito_nuclear
 ├──00_start_annotation
-├──01_RepeatMasker
-├──01_RepeatModeler
+├──01_RepeatLib
 ├──02_RepeatMasker
 ├──03_SoftMask
 ├──04_TRF_mask
@@ -42,7 +41,7 @@ output
 ├──diamond_nr
 ├──fcs-db
 ├──LUCA.h5
-├──Lib_fish {Repeat DB, constructed with instruction in [tetools](https://github.com/Dfam-consortium/TETools)}
+├──RepeatMasker_DB {RepeatMasker library root with famdb/ and RMRBSeqs.embl}
 ├──MITOS2-refdata
 └──Rfam_db
 ```
@@ -159,18 +158,23 @@ nohup busco -i {genome fasta} -m genome -l {ex.mollusca_odb10} -c {cpu numbers} 
 Copy genome fastas (nuclear, mitochondria, nuclear+mitochondria) to 00_start_annotation.
 
 # Repeat soft masking
-Run repeat masking with RepeatModeler, RepeatMasker in TETools and second-time TRF (followed the instruction from Braker3 2024 [paper](https://arxiv.org/abs/2403.19416))
+Run repeat masking with RepeatModeler, RepeatMasker in TETools and second-time TRF (followed the instruction from Braker3 2024 [paper](https://arxiv.org/abs/2403.19416)).
+The repeat masking script now expects the RepeatMasker database root directory, not the famdb subdirectory. The root should contain both `famdb/` and `RMRBSeqs.embl`.
 ```
 #Start a docker container with TETools
 docker run --name tetools-v1.89.2 -it -d -u root -v /home/abieskawa/output:/output --workdir /output/ dfam/tetools:1.89.2 bash
 
 docker exec -it tetools-v1.89.2 bash
 
+#Optional: refresh RepeatMasker_DB with Dfam and RepBase
+#Edit OLD_DB, NEW_DB, IMAGE, and BASE in the script first if your database paths or versions are different.
+bash {the path of this directory}/update_repeatmasker_db.sh
+
 #Repeat masking with RepeatMasker and RepeatModeler
 nohup bash -c "time {the path of this directory}/repeatmask.sh 
            -i /output/{file basename}/00_start_annotation/{genome fasta basename}_clean.fasta{or genome fasta in 00_raw_genome if there is no mitochondria or contamination issue in the raw genome} \
            -o /output/{file basename}/ -t 128 \
-           -l {ex./output/RepeatMasker_DB/famdb} -s '{search target}' \
+           -l {ex./output/RepeatMasker_DB} -s '{search target}' \
            -f '{file basename}' --log repeatmask.log 2>&1" 2> run_repeatmask_time.log > /dev/null &
 
 #Run repeat masking again with TRF
@@ -240,6 +244,9 @@ nohup ~/tools/sratoolkit.3.1.1-ubuntu64/bin/fasterq-dump --split-files {SRA run 
 #Purge adapters from illumina RNA-seq, and those being too short or having a quality score below 20 from RNA will be removed.
 nohup {the path of this directory}/run_cutadapt.sh -d {raw RNA-seq dir} -o {cleaned RNA-seq dir} -t {cpus} -l 5 -q 20 -Q 20 -f sample_trim.txt > run_cutadapt.log 2>&1 &
 
+#Alternative RNA-only preprocessing with fastp. Output names are standardized as *_1.cleaned.fastq.gz or *_R1.cleaned.fastq.gz.
+nohup python {the path of this directory}/fastp_preprocessing.py -d {raw RNA-seq dir} -o {cleaned RNA-seq dir} -w {fastp threads, max 16} -l 30 -q 20 --trim-front sample_trim.txt --detect-adapter-pe > run_fastp_preprocessing.log 2>&1 &
+
 #Run RNA mapping with STAR and keep only reads flagged as 2.
 nohup python {the path of this directory}/run_rna_mapping.py --mode short-read --genomepath {nuclear genome} --genomedir {genome index dir} --wd {dir for cleaned.fq/fastq} --out_dir {outdir} --threads {cpus} > run_rna_mapping.log 2>&1 &
 ```
@@ -250,6 +257,11 @@ Map the reads to genome with minmap2 as team braker2 recommend
 
 ```
 nohup python {the path of this directory}/isoseq_preprocess.py -i "A.fastq:B_1.fastq,B_2.fastq" -i -g "ADAPTER1{30}" -a ADAPTER3 
+
+#Optional: trim PacBio Iso-Seq primers/poly-A, cluster with IsoSeq3, and polish HQ transcripts with Illumina reads.
+#The sample table is tab-separated: PacBio_FASTQ_basename, sample_label, comma-separated_Illumina_IDs.
+#Illumina FASTQs are discovered as {ID}_1.fastq.gz and {ID}_2.fastq.gz under --raw.
+nohup python {the path of this directory}/run_isoseq_polish.py -s isoseq_polish.tsv -r {raw FASTQ dir} -o {Iso-Seq output dir} -t 128 --primer5 {5prime primer} --primer3 {3prime primer} --min-len 50 -k 19 --solid 3 > run_isoseq_polish.log 2>&1 &
 
 nohup python {the path of this directory}/run_rna_mapping.py --mode iso-seq --genomepath {nuclear genome} --wd {dir for cleaned.fq/fastq} --out_dir {outdir} --threads {cpus}  >run_rna_mapping_isoseq.log 2>&1 &
 ```
@@ -263,6 +275,12 @@ docker run -d --rm -u root -v /home/abieskawa/output:/output --workdir /output/{
 
 #Run within docker
 nohup bash -c "time ({the path of this directory}/run_braker3.sh -t 120 -g {TRF masked genome} -p {protein evidence} -s {parameter set name} -w {outdir} -b {bam file dir} -l {BUSCO odb}  > run_braker3.log 2>&1)" 2> run_braker3_time.log > /dev/null &
+```
+
+## Run FEELnc lncRNA annotation
+This helper remaps cleaned paired-end RNA-seq reads with annotation-aware STAR, runs StringTie, and then runs FEELnc filter/coding-potential/classifier steps. Cleaned FASTQs should be named `*_1.cleaned.fastq.gz`/`*_2.cleaned.fastq.gz` or `*_R1.cleaned.fastq.gz`/`*_R2.cleaned.fastq.gz`.
+```
+nohup python {the path of this directory}/run_feelnc.py --genome {genome fasta} --braker_gtf 06_braker3/braker_utr.gtf.gz --fastq_dir {cleaned RNA-seq dir} --out_dir {output parent dir} --prefix {file basename}_FEELnc --threads 128 --make_gff3 > run_feelnc.log 2>&1 &
 ```
 
 ## Check Braker3 result
@@ -330,7 +348,8 @@ nohup diamond makedb --in nr/nr.000-125.fasta --threads 128 -d diamond_nr/nr.000
 ```
 nohup bash -c "time (diamond blastp --header simple --max-target-seqs 1 --outfmt 6 qseqid stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids -q 08_FASTA/{protein fasta} -d ~/output/diamond_nr/nr.000-125.dmnd -o 11_diamond_blastp_mito_nuclear/{output prefix}_diamond.tsv --threads 128 > run_diamond_blastp.log 2>&1)" 2> run_diamond_blastp_time.log > /dev/null &
 
-python {the path of this directory}/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp{_mito}_nuclear/{output prefix}_diamond.tsv -o 11_diamond_blastp{_mito}_nuclear/{output prefix}
+#Use -g when protein IDs should be mapped back to genes through CDS Parent chains in a GFF3.
+python {the path of this directory}/eva_annotation.py diamond-nr -p {input protein sequence} -d 11_diamond_blastp{_mito}_nuclear/{output prefix}_diamond.tsv -g 07_merge_gff/merged_fix.gff -o 11_diamond_blastp{_mito}_nuclear/{output prefix}
 ```
 
 ## Run DeepTMHMM
@@ -346,7 +365,7 @@ Note that it can take days(~2 days) to download, please stay calm and be patient
 ```
 nohup python3 {the path of this directory}/downloadkaas.py {"download link from kaas"} > download.log 2>&1 &
 
-python {the path of this directory}/eva_annotation.py kaas 10_kaas{_mito}_nuclear/query.ko 10_kaas{_mito}_nuclear
+python {the path of this directory}/eva_annotation.py kaas 10_kaas{_mito}_nuclear/query.ko 10_kaas{_mito}_nuclear -g 07_merge_gff/merged_fix.gff
 ```
 
 ## Run InterProScan
@@ -355,17 +374,17 @@ Sometimes, it might require to adjust the memory limitation, be careful to any e
 ```
 nohup bash -c 'time ( _JAVA_OPTIONS="-Xmx1536g" interproscan.sh -i {input peptide seq. ex.08_FASTA/marine_tilapia_MTW02_combined_pep.fa} -goterms -f tsv --output-file-base 12_interproscan_mito_nulcear/interproscan_result -cpu 128 > run_interproscan.log 2>&1 )' 2>run_interproscan_time.log > /dev/null &
 
-python {the path of this directory}/eva_annotation.py interpro -p {input peptide seq.} -i 12_interproscan_mito_nulcear/interproscan_result.tsv -o 12_interproscan_mito_nulcear/{file basename}
+python {the path of this directory}/eva_annotation.py interpro -p {input peptide seq.} -i 12_interproscan_mito_nulcear/interproscan_result.tsv -g 07_merge_gff/merged_fix.gff -o 12_interproscan_mito_nulcear/{file basename}
 
 #Extract the info that MOLAS ask for
 python {the path of this directory}/interproscan_extract.py -in interproscan_result.tsv -p {file basename}
 ``` 
 ## Venn diagram of Annotated Gene
 ``` 
-[within R conda env]{the path of this directory}/vennplot.r -i GO 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_go.tsv -i IPR 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_ipr.tsv -i diamond 11_diamond_blastp_mito_nulcear/{file prefix}_mito_nuclear.informative_gene_list.tsv -i KAAS 12_kaas_mito_nuclear/kaas_annotated_genes.tsv -a {file prefix}_MOLAS_input/FASTA/{file prefix}_combined_pep.fa -o functional_venn.png
+[within R conda env]{the path of this directory}/vennplot.r -i GO 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_go.tsv -i IPR 10_interproscan_mito_nulcear/{file prefix}_mito_nuclear_annotated_gene_ipr.tsv -i diamond 11_diamond_blastp_mito_nulcear/{file prefix}_mito_nuclear.informative_gene_list.tsv -i KAAS 12_kaas_mito_nuclear/kaas_annotated_genes.tsv -a {file prefix}_MOLAS_input/FASTA/{file prefix}_combined_pep.fa -g 07_merge_gff/merged_fix.gff -o functional_venn.png
 ``` 
 ## Run RNA analysis
-This process can generate table for gene/transcript level for further analysis
+This process can generate table for gene/transcript level for further analysis. Use GTF annotation input; cleaned FASTQs can use either `_1/_2.cleaned.fq(.gz)` or `_R1/_R2.cleaned.fastq(.gz)` naming.
 #Although STAR can handle gff, it requires to be modified the normal gff format further
 ```
 nohup python {the path of this directory}/run_rna_analysis.py --reads-dir {short-read cleaned seq dir} --genome-fasta {nuclear(+mito) genome fasta} --annotation {merged.gtf} --out-dir RNAseq_ana --threads 128 --transcript-fpkm --transcript-counts --gene-fpkm --gene-tpm --gene-counts --merge-expression > RNAseq_ana.log 2>&1 &
@@ -395,7 +414,7 @@ docker run --rm -v $(pwd):/data alexcoppe/circos -conf /data/circos.conf -output
 fcs.py/run_fcsadaptor.sh [[link](https://github.com/ncbi/fcs)]
 
 ### Repeat Annotation/masking
-TETools (v1.89.2) [[link](https://github.com/Dfam-consortium/TETools)]
+TETools (v1.89.2 or newer; `update_repeatmasker_db.sh` uses dfam/tetools:1.99 and Dfam 3.9) [[link](https://github.com/Dfam-consortium/TETools)]
 TRF (v4.09) [[link](https://github.com/Benson-Genomics-Lab/TRF)]
 bedtools (v2.31.1) [[link](https://github.com/arq5x/bedtools2)]
 splitMfasta.pl [[link](https://github.com/Gaius-Augustus/Augustus/blob/487b12b40ec3b4940b6b07b72bbb443f011f1865/scripts/splitMfasta.pl)]
@@ -414,3 +433,4 @@ Fix_Augustus_gtf.pl[[link](https://github.com/Gaius-Augustus/BRAKER/issues/457#i
 ### RNAseq analysis
 stringtie (v2.2.3), prepDE.py[[link](https://github.com/gpertea/stringtie)] Note: prepDE.py3 in that repository was used here.
 STAR (v2.7.11b)[[link](https://github.com/alexdobin/STAR)]
+FEELnc[[link](https://github.com/tderrien/FEELnc)]

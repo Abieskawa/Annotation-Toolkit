@@ -25,6 +25,313 @@ def parse_attributes(attr_str):
             attrs[key] = val
     return attrs
 
+
+
+# Backward-compatible alias (some helper code expects this name)
+def _parse_gff_attributes(attr_str):
+    return parse_attributes(attr_str)
+
+# -----------------------------------------------------------------------
+# Utility: Build protein_id -> gene_id mapping from an NCBI/RefSeq GFF3
+# -----------------------------------------------------------------------
+def _normalize_gff_id(raw_id):
+    """Strip common NCBI prefixes (gene-/rna-) from a GFF3 ID string."""
+    if raw_id is None:
+        return None
+    raw_id = raw_id.strip()
+    for prefix in ("gene-", "rna-", "mrna-", "mRNA-", "transcript-"):
+        if raw_id.startswith(prefix):
+            return raw_id[len(prefix):]
+    return raw_id
+
+def _split_attr_list(val):
+    """Split a comma-separated GFF3 attribute value into a clean list."""
+    if not val:
+        return []
+    return [x.strip() for x in val.split(",") if x.strip()]
+
+
+def build_protein_to_gene_map_from_gff(gff_file, unresolved_out=None):
+    """
+    Build a mapping of protein IDs to gene labels using GFF3 parentage.
+
+    Robust strategy:
+      1) Index all feature IDs and their Parent relationships (ID -> Parent(s)).
+      2) Cache gene feature labels (for type=gene).
+      3) For each CDS that has a protein_id, walk up the Parent chain (BFS) until a gene is found.
+         This works even when intermediate feature types are non-standard (e.g., V_gene_segment).
+
+    Notes about NCBI/RefSeq GFF3:
+      - Many CDS lines have protein_id=<XP_...> (or similar).
+      - Some biological features (e.g., immunoglobulin segments) may have CDS entries WITHOUT protein_id.
+        Those cannot be mapped to protein FASTA/diamond qseqid; we list them separately when
+        `unresolved_out` is provided.
+
+    Gene label priority (from the gene feature attributes):
+        gene  >  locus_tag  >  Name  >  ID (normalized by stripping 'gene-')
+
+    Args:
+        gff_file (str): Path to a GFF3 file.
+        unresolved_out (str|None): If provided, write a TSV listing CDS entries that:
+            - have protein_id but cannot be resolved to a gene, and/or
+            - lack protein_id entirely (common for special cases like rearrangement-required segments).
+
+    Returns:
+        dict: {protein_id: gene_label}
+    """
+    id_to_parents = {}
+    id_to_type = {}
+    gene_id_to_label = {}
+    gene_label_to_id = {}
+    # Some non-gene features carry useful labels; keep as fallback.
+    id_to_geneish_label = {}
+
+    # protein_id -> list of CDS entry dicts
+    cds_by_protein = {}
+    # CDS entries that do not have protein_id
+    cds_missing_protein = []
+
+    def _norm_gene_id(feat_id):
+        if not feat_id:
+            return feat_id
+        return feat_id[5:] if feat_id.startswith("gene-") else feat_id
+
+    def _gene_label_from_attrs(attrs, feat_id=None):
+        return attrs.get("gene") or attrs.get("locus_tag") or attrs.get("Name") or _norm_gene_id(feat_id)
+
+    with open(gff_file, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+
+            seqid, source, feature_type, start, end, score, strand, phase, attr_str = parts
+            attrs = _parse_gff_attributes(attr_str)
+
+            feat_id = attrs.get("ID")
+            if feat_id:
+                id_to_type[feat_id] = feature_type
+
+                parents = _split_attr_list(attrs.get("Parent"))
+                if parents:
+                    id_to_parents[feat_id] = parents
+
+                # Cache any gene-ish label as fallback for intermediate nodes
+                lbl = attrs.get("gene") or attrs.get("locus_tag") or attrs.get("Name")
+                if lbl:
+                    id_to_geneish_label[feat_id] = lbl
+
+            # Cache gene labels (authoritative) and reverse lookup from common labels
+            if feature_type == "gene" and feat_id:
+                glabel = _gene_label_from_attrs(attrs, feat_id)
+                gene_id_to_label[feat_id] = glabel
+                for key in (attrs.get("gene"), attrs.get("locus_tag"), attrs.get("Name"), glabel, _norm_gene_id(feat_id), feat_id):
+                    if key and key not in gene_label_to_id:
+                        gene_label_to_id[key] = feat_id
+                continue
+
+            # CDS entries: store protein_id and parent(s)
+            if feature_type == "CDS":
+                protein_id = attrs.get("protein_id")
+                parents = _split_attr_list(attrs.get("Parent"))
+                cds_id = attrs.get("ID")
+
+                entry = {
+                    "protein_id": protein_id or "",
+                    "cds_id": cds_id or "",
+                    "parent_id": parents[0] if parents else "",
+                    "parent_ids": parents or [],
+                    "seqid": seqid,
+                    "start": int(start) if start.isdigit() else start,
+                    "end": int(end) if end.isdigit() else end,
+                    "strand": strand,
+                    "attrs_raw": attr_str,
+                    "gene_attr": attrs.get("gene") or attrs.get("locus_tag") or attrs.get("Name"),
+                }
+
+                if not protein_id:
+                    cds_missing_protein.append(entry)
+                else:
+                    cds_by_protein.setdefault(protein_id, []).append(entry)
+
+    def _find_gene_label_from_feature(start_id):
+        """
+        Walk parent relationships upwards until a gene feature is found.
+        Returns (gene_label, found_gene_feat_id) or (None, None).
+        """
+        if not start_id:
+            return None, None
+
+        q = [start_id]
+        visited = set()
+
+        while q:
+            cur = q.pop(0)
+            if not cur or cur in visited:
+                continue
+            visited.add(cur)
+
+            # Direct gene feature
+            if cur in gene_id_to_label:
+                return gene_id_to_label[cur], cur
+
+            # Sometimes gene IDs exist but weren't cached as type=gene for odd files
+            if cur.startswith("gene-"):
+                # Try best-effort
+                return id_to_geneish_label.get(cur) or _norm_gene_id(cur), cur
+
+            # If this node carries a gene-ish label, keep it as potential fallback but
+            # continue walking to prefer an actual gene feature.
+            # (We don't return immediately because intermediate nodes may have gene=, but
+            # the gene feature label might be better.)
+            q.extend(id_to_parents.get(cur, []))
+
+        return None, None
+
+    protein_to_gene = {}
+    unresolved_rows = []
+    unresolved_count = 0
+
+    for protein_id, entries in cds_by_protein.items():
+        gene_label = None
+        gene_feat = None
+        reason = None
+
+        # Try parents from all CDS entries (some proteins have multiple CDS parts)
+        parent_ids = []
+        for e in entries:
+            parent_ids.extend(e.get("parent_ids", []))
+        # Preserve order but unique
+        seen = set()
+        parent_ids = [p for p in parent_ids if p and not (p in seen or seen.add(p))]
+
+        for pid in parent_ids:
+            gene_label, gene_feat = _find_gene_label_from_feature(pid)
+            if gene_label:
+                break
+
+        if not gene_label:
+            # Fallback: use gene-like attribute carried on CDS itself (common in NCBI GFF)
+            for e in entries:
+                if e.get("gene_attr"):
+                    gene_label = e["gene_attr"]
+                    gene_feat = gene_label_to_id.get(gene_label)
+                    if not gene_feat and gene_label and not str(gene_label).startswith("gene-"):
+                        gene_feat = f"gene-{gene_label}"
+                    reason = "Used CDS gene/locus_tag/Name attribute as fallback (no resolvable gene parentage)"
+                    break
+
+        if gene_label:
+            protein_to_gene[protein_id] = gene_feat if gene_feat else gene_label
+        else:
+            unresolved_count += 1
+            # Pick one representative CDS entry for reporting
+            e = entries[0]
+            parent0 = e.get("parent_id", "")
+            if not parent0:
+                reason = "CDS has no Parent attribute"
+            elif parent0 in id_to_type:
+                reason = f"Parent feature '{parent0}' exists (type='{id_to_type[parent0]}') but no path to a gene feature was found"
+            else:
+                reason = f"Parent feature '{parent0}' not found among GFF IDs"
+
+            unresolved_rows.append(
+                {
+                    "protein_id": protein_id,
+                    "cds_id": e.get("cds_id", ""),
+                    "parent_id": parent0,
+                    "seqid": e.get("seqid", ""),
+                    "start": e.get("start", ""),
+                    "end": e.get("end", ""),
+                    "strand": e.get("strand", ""),
+                    "reason": reason,
+                    "cds_attributes": e.get("attrs_raw", ""),
+                }
+            )
+
+    # Also report CDS lacking protein_id so users can inspect special cases
+    missing_count = len(cds_missing_protein)
+
+    # Create proxy mappings for CDS lacking protein_id (e.g., immune segments / rearrangement-required).
+    # Use gene/locus_tag/Name carried on CDS (if present) as a "protein ID" key and map it to the gene feature ID.
+    proxy_added = 0
+    if missing_count > 0:
+        for e in cds_missing_protein:
+            proxy_key = e.get("gene_attr") or ""
+            if not proxy_key:
+                continue
+
+            # Try to resolve gene via Parent chain starting from the CDS's parent feature.
+            gene_label, gene_feat = _find_gene_label_from_feature(e.get("parent_id"))
+            if not gene_feat:
+                # Reverse-lookup from gene label -> gene feature ID
+                gene_feat = gene_label_to_id.get(proxy_key) or gene_label_to_id.get(gene_label)
+            if not gene_feat and proxy_key and not str(proxy_key).startswith("gene-"):
+                gene_feat = f"gene-{proxy_key}"
+
+            if gene_feat and proxy_key not in protein_to_gene:
+                protein_to_gene[proxy_key] = gene_feat
+                proxy_added += 1
+    if unresolved_out and (unresolved_count > 0 or missing_count > 0):
+        try:
+            with open(unresolved_out, "w", encoding="utf-8") as out:
+                out.write("\t".join(
+                    ["protein_id", "cds_id", "parent_id", "seqid", "start", "end", "strand", "reason", "cds_attributes"]
+                ) + "\n")
+
+                for r in unresolved_rows:
+                    out.write("\t".join([
+                        r["protein_id"],
+                        r["cds_id"],
+                        r["parent_id"],
+                        r["seqid"],
+                        str(r["start"]),
+                        str(r["end"]),
+                        r["strand"],
+                        r["reason"],
+                        r["cds_attributes"],
+                    ]) + "\n")
+
+                for e in cds_missing_protein:
+                    out.write("\t".join([
+                        "",  # protein_id missing
+                        e.get("cds_id", ""),
+                        e.get("parent_id", ""),
+                        e.get("seqid", ""),
+                        str(e.get("start", "")),
+                        str(e.get("end", "")),
+                        e.get("strand", ""),
+                        "CDS has no protein_id attribute (common for special/rearrangement-required annotations)",
+                        e.get("attrs_raw", ""),
+                    ]) + "\n")
+
+            print(f"[INFO] Wrote GFF mapping issues to: {unresolved_out}", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARN] Failed to write unresolved list to '{unresolved_out}': {e}", file=sys.stderr)
+
+    if missing_count > 0:
+        print(
+            f"[WARN] {missing_count} CDS feature(s) lack protein_id in: {gff_file} "
+            f"(true protein_id is missing; created {proxy_added} proxy mapping(s) using gene/locus_tag/Name as protein IDs).",
+            file=sys.stderr,
+        )
+
+    if unresolved_count > 0:
+        print(
+            f"[WARN] {unresolved_count} protein_id(s) from CDS could not be resolved back to a gene via Parent chains in: {gff_file}",
+            file=sys.stderr,
+        )
+
+    return protein_to_gene
+
+def map_protein_to_gene(protein_id, gff_map=None, fallback=None):
+    """Resolve a gene ID from a protein ID using an optional GFF-derived mapping."""
+    if gff_map and protein_id in gff_map:
+        return gff_map[protein_id]
+    return fallback(protein_id) if fallback else protein_id
+
 # -----------------------------------------------------------------------
 # Helper: Ensure Unique Entries Based on 'ID'
 # -----------------------------------------------------------------------
@@ -615,6 +922,11 @@ def run_structural(args):
 
 def run_interpro(args):
     import re
+    gff_map = None
+    if getattr(args, 'gff', None):
+        unresolved_out = f"{args.outprefix}_gff_unresolved_protein_ids.tsv"
+        gff_map = build_protein_to_gene_map_from_gff(args.gff, unresolved_out=unresolved_out)
+    fallback_gene = lambda pid: re.sub(r"\.p\d+$", "", pid)
     proteins = set()
     genes = set()
     with open(args.protein, "r") as f:
@@ -622,7 +934,7 @@ def run_interpro(args):
             if line.startswith(">"):
                 protein_id = line.strip().split()[0][1:]
                 proteins.add(protein_id)
-                gene_id = re.sub(r"\.p\d+$", "", protein_id)
+                gene_id = map_protein_to_gene(protein_id, gff_map, fallback_gene)
                 genes.add(gene_id)
     annotated_proteins_ipr = set()
     annotated_genes_ipr    = set()
@@ -637,7 +949,7 @@ def run_interpro(args):
             if len(cols) < 2:
                 continue
             protein_name = cols[0].strip()
-            gene_name = re.sub(r"\.p\d+$", "", protein_name)
+            gene_name = map_protein_to_gene(protein_name, gff_map, fallback_gene)
             found_ipr = any(col.strip().startswith("IPR") for col in cols[1:] if col.strip())
             found_go = any("GO:" in col for col in cols[1:] if col.strip())
             if found_ipr:
@@ -699,6 +1011,13 @@ def run_kaas(args):
     out_dir = args.outdir
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
+
+    gff_map = None
+    if getattr(args, 'gff', None):
+        unresolved_out = os.path.join(out_dir, "kaas_gff_unresolved_protein_ids.tsv")
+        gff_map = build_protein_to_gene_map_from_gff(args.gff, unresolved_out=unresolved_out)
+
+    fallback_gene = lambda pid: pid.split(".", 1)[0]
     f1_count = 0
     f2_count = 0
     all_genes = set()
@@ -710,7 +1029,7 @@ def run_kaas(args):
             if len(fields) >= 1 and fields[0].strip():
                 f1_count += 1
                 protein_name = fields[0].strip()
-                gene_name = protein_name.split(".", 1)[0]
+                gene_name = map_protein_to_gene(protein_name, gff_map, fallback_gene)
                 all_genes.add(gene_name)
                 if len(fields) >= 2 and fields[1].strip():
                     f2_count += 1
@@ -738,6 +1057,11 @@ def run_kaas(args):
     print(f"Summary file saved to: {summary_file}")
 
 def run_nr(args):
+    gff_map = None
+    if getattr(args, 'gff', None):
+        unresolved_out = f"{args.outprefix}_gff_unresolved_protein_ids.tsv"
+        gff_map = build_protein_to_gene_map_from_gff(args.gff, unresolved_out=unresolved_out)
+    fallback_gene = lambda pid: re.sub(r"\.p\d+$", "", pid)
     proteins = set()
     genes = set()
     with open(args.protein, "r") as f:
@@ -745,7 +1069,7 @@ def run_nr(args):
             if line.startswith(">"):
                 protein_id = line.strip().split()[0][1:]
                 proteins.add(protein_id)
-                gene_id = re.sub(r"\.p\d+$", "", protein_id)
+                gene_id = map_protein_to_gene(protein_id, gff_map, fallback_gene)
                 genes.add(gene_id)
     hits_protein = set()
     hits_gene = set()
@@ -769,7 +1093,7 @@ def run_nr(args):
             qseqid = cols[0].strip()
             stitle = cols[1].strip()
             hits_protein.add(qseqid)
-            gene_id = re.sub(r"\.p\d+$", "", qseqid)
+            gene_id = map_protein_to_gene(qseqid, gff_map, fallback_gene)
             hits_gene.add(gene_id)
             stitle_lower = stitle.lower()
             if "uncharacterized" in stitle_lower:
@@ -953,6 +1277,7 @@ def main():
     ip = subparsers.add_parser("interpro", help="Process an InterProScan TSV file.")
     ip.add_argument("-p", "--protein", required=True, help="Input protein FASTA file")
     ip.add_argument("-i", "--interpro_tsv", required=True, help="InterProScan TSV file")
+    ip.add_argument("-g", "--gff", help="Optional GFF3 file to map protein IDs to gene IDs via CDS->mRNA->gene (NCBI/RefSeq style).")
     ip.add_argument("-o", "--outprefix", default="interpro_output", help="Prefix for output annotation files.")
     ip.set_defaults(func=run_interpro)
 
@@ -960,11 +1285,13 @@ def main():
         help="Process a KAAS result file and generate a summary file. Usage: python eva_annotation.py kaas query.ko [outdir]")
     ka.add_argument("query", help="KAAS result file (e.g., query.ko)")
     ka.add_argument("outdir", nargs="?", default=".", help="Output directory (default: current directory)")
+    ka.add_argument("-g", "--gff", help="Optional GFF3 file to map first-column protein IDs to gene IDs via CDS->mRNA->gene (NCBI/RefSeq style).")
     ka.set_defaults(func=run_kaas)
 
     dn = subparsers.add_parser("diamond-nr", help="Evaluate Diamond BLASTP TSV output (NR database mode).")
     dn.add_argument("-p", "--protein", required=True, help="Path to the input protein FASTA file.")
     dn.add_argument("-d", "--diamond_tsv", required=True, help="Path to the Diamond BLASTP TSV output file.")
+    dn.add_argument("-g", "--gff", help="Optional GFF3 file to map protein IDs to gene IDs via CDS->mRNA->gene (NCBI/RefSeq style).")
     dn.add_argument("-o", "--outprefix", default="output", help="Prefix for output files (default: 'output').")
     dn.set_defaults(func=run_nr)
 

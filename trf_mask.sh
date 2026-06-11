@@ -79,6 +79,7 @@ ABS_INPUT=$(realpath "$INPUT") || { echo "Error: Unable to resolve absolute path
 #--------------------------------------------------------------------------------
 BASE=$(basename "$INPUT")                    
 BASE_NAME=$(echo "$BASE" | sed -E 's/\.(fa|fna|fasta|masked)//g')  
+BASE_NAME="${BASE_NAME}_TRF"
 
 #--------------------------------------------------------------------------------
 # Automatically detect the directory of this script.
